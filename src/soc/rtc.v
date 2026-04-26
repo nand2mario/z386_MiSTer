@@ -24,7 +24,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-module rtc(
+module rtc #(
+	parameter FORCE_16MB = 1'b0
+) (
 	input             clk,
 	input             rst_n,
 
@@ -80,6 +82,22 @@ end
 
 //------------------------------------------------------------------------------
 
+reg [7:0] mgmt_ext_mem_msb;
+reg [15:0] mgmt_checksum;
+
+always @(posedge clk) begin
+	if(rst_n == 1'b0) begin
+		mgmt_ext_mem_msb <= 8'h3C;
+		mgmt_checksum <= 16'd0;
+	end else if(mgmt_write) begin
+		if(mgmt_address == 8'h18) mgmt_ext_mem_msb <= mgmt_writedata;
+		if(mgmt_address == 8'h2E) mgmt_checksum[15:8] <= mgmt_writedata;
+		if(mgmt_address == 8'h2F) mgmt_checksum[7:0] <= mgmt_writedata;
+	end
+end
+
+wire [15:0] force16_checksum = mgmt_checksum + 16'h003C - {8'd0, mgmt_ext_mem_msb};
+
 reg io_read_last;
 always @(posedge clk) begin if(rst_n == 1'b0) io_read_last <= 1'b0; else if(io_read_last) io_read_last <= 1'b0; else io_read_last <= io_read; end 
 wire io_read_valid = io_read && io_read_last == 1'b0;
@@ -107,6 +125,14 @@ wire [7:0] io_readdata_next =
     (ram_address == 7'h3D) ? {2'b00, bootcfg[3:2], 2'b00, bootcfg[1:0]} :
     (ram_address == 7'h32) ? rtc_century :
     (ram_address == 7'h37) ? rtc_century :
+    (FORCE_16MB && ram_address == 7'h17) ? 8'h00 :
+    (FORCE_16MB && ram_address == 7'h18) ? 8'h3C :
+    (FORCE_16MB && ram_address == 7'h2E) ? force16_checksum[15:8] :
+    (FORCE_16MB && ram_address == 7'h2F) ? force16_checksum[7:0] :
+    (FORCE_16MB && ram_address == 7'h30) ? 8'h00 :
+    (FORCE_16MB && ram_address == 7'h31) ? 8'h3C :
+    (FORCE_16MB && ram_address == 7'h34) ? 8'h00 :
+    (FORCE_16MB && ram_address == 7'h35) ? 8'h00 :
                              ram_q;
 
 always @(posedge clk) begin

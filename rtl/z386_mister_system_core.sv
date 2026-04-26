@@ -326,6 +326,7 @@ system #(
 ) system_i (
 	.clk_sys             (clk_sys),
 	.reset               (core_reset),
+	.hps_apply_reset     (status[0]),
 	.software_reset      (software_reset),
 	.clock_rate          (CLOCK_RATE_HZ),
 

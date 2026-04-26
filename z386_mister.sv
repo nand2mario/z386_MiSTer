@@ -104,8 +104,10 @@ module emu
 
 localparam CLOCK_RATE_HZ = 85_000_000;
 
+// Report ourselves as AO486 so Main_MiSTer is compatible
 localparam CONF_STR = {
-	"Z386;UART115200;",
+//	"Z386;UART115200;",
+	"AO486;UART115200;",
 	"S0,IMGIMAVFD,Floppy A:;",
 	"S1,IMGIMAVFD,Floppy B:;",
 	"-;",
@@ -115,7 +117,7 @@ localparam CONF_STR = {
 	"S4,VHDISOCUECHD,IDE 1-0;",
 	"S5,VHDISOCUECHD,IDE 1-1;",
 	"-;",
-	"R0,Reset;"
+	"R0,Reset and apply HDD;"
 };
 
 wire        clk_sys;

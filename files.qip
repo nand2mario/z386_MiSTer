@@ -3,7 +3,7 @@ set_global_assignment -name QIP_FILE backend.qip
 set_global_assignment -name SYSTEMVERILOG_FILE z386_mister.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386_pkg.sv
-set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386_ucode_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/ucode_rom.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/alu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/biu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/decoder.sv

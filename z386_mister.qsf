@@ -45,7 +45,7 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
 set_global_assignment -name OPTIMIZE_POWER_DURING_SYNTHESIS OFF
 set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
-set_global_assignment -name SEED 3
+set_global_assignment -name SEED 5
 set_global_assignment -name VERILOG_MACRO "Z386_QUARTUS_M10K_UCODE=1"
 
 source ../ao486_MiSTer/sys/sys.tcl
@@ -274,24 +274,26 @@ set_global_assignment -name ENABLE_SIGNALTAP OFF
 
 
 
-set_global_assignment -name MISC_FILE ../17.z386/ucode45.mif
+set_global_assignment -name MISC_FILE src/z386/ucode45.mif
 set_global_assignment -name QIP_FILE backend.qip
 set_global_assignment -name SDC_FILE z386_mister.sdc
 set_global_assignment -name SEARCH_PATH ../ao486_MiSTer/sys
-set_global_assignment -name SEARCH_PATH ../17.z386
+set_global_assignment -name SEARCH_PATH src/z386
 set_global_assignment -name SYSTEMVERILOG_FILE z386_mister.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/z386_pkg.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/z386_ucode_rom.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/alu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/biu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/decoder.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/dsp_mul.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/paging_tlb.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/paging_unit.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/paging_walker.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/prefetch.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/protection.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/segmentation_unit.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../17.z386/z386.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/ucode_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/decoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/dsp_mul.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_tlb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_walker.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/prefetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/protection.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/segmentation_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
+
+
 
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

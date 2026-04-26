@@ -2,6 +2,7 @@
 module system (
     input         clk_sys,
     input         reset,
+    input         hps_apply_reset,
     output        software_reset,    // keyboard controller 0xFE reset command
 	input  [27:0] clock_rate,
 
@@ -175,6 +176,16 @@ assign cpu_cs_base = debug_cpu_cs_base;
 reg [15:0] rst /* synthesis syn_preserve = "true" */;
 always @(posedge clk_sys)
 	rst <= {16{reset}};
+
+reg hps_apply_reset_seen;
+always @(posedge clk_sys) begin
+	if(!reset) hps_apply_reset_seen <= 1'b0;
+	else if(hps_apply_reset) hps_apply_reset_seen <= 1'b1;
+end
+
+wire suppress_ide_reset = hps_apply_reset | hps_apply_reset_seen;
+wire ide0_reset = rst[3] & ~suppress_ide_reset;
+wire ide1_reset = rst[5] & ~suppress_ide_reset;
 
 wire        a20_enable;
 wire  [7:0] dma_floppy_readdata;
@@ -956,7 +967,7 @@ wire        ide0_io_32    = (iobus_ide_read | iobus_ide_write) ? iobus_ide_32 : 
 ide ide0
 (
 	.clk               (clk_sys),
-	.rst_n             (~rst[3]),
+	.rst_n             (~ide0_reset),
 
 	.io_address        (ide0_io_addr),
 	.io_writedata      (ide0_io_wdata),
@@ -989,7 +1000,7 @@ wire        ide1_io_32    = (iobus_ide_read | iobus_ide_write) ? iobus_ide_32 : 
 ide ide1
 (
 	.clk               (clk_sys),
-	.rst_n             (~rst[5]),
+	.rst_n             (~ide1_reset),
 
 	.io_address        (ide1_io_addr),
 	.io_writedata      (ide1_io_wdata),
@@ -1076,7 +1087,9 @@ ps2 ps2
 	.irq_mouse         (irq_12)
 );
 
-rtc rtc
+rtc #(
+	.FORCE_16MB         (1'b1)
+) rtc
 (
 	.clk               (clk_sys),
 	.rst_n             (~rst[8]),
