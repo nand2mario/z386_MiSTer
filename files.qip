@@ -1,0 +1,20 @@
+set_global_assignment -name QIP_FILE backend.qip
+
+set_global_assignment -name SYSTEMVERILOG_FILE z386_mister.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386_ucode_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/biu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/decoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/dsp_mul.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_tlb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/paging_walker.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/prefetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/protection.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/segmentation_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
+
+set_global_assignment -name MISC_FILE src/z386/ucode45.mif
+set_global_assignment -name SDC_FILE z386_mister.sdc

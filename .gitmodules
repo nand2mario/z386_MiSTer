@@ -1,0 +1,3 @@
+[submodule "src/z386"]
+	path = src/z386
+	url = git@github.com:nand2mario/z386.git

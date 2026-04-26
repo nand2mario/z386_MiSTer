@@ -1,0 +1,36 @@
+set_global_assignment -name SEARCH_PATH src
+
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/z386_mister_system_core.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE src/system.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/iobus_adapter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/pic_inta_bridge.sv
+
+set_global_assignment -name SYSTEMVERILOG_FILE src/memory/l1_cache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/memory/main_memory.sv
+set_global_assignment -name VERILOG_FILE src/memory/sdram.v
+set_global_assignment -name SYSTEMVERILOG_FILE src/memory/sdram_x2_wrapper.sv
+
+set_global_assignment -name VERILOG_FILE src/common/async_fifo.v
+set_global_assignment -name SYSTEMVERILOG_FILE src/common/cdc_vector_handshake_continuous.sv
+set_global_assignment -name VERILOG_FILE src/common/dpram.v
+set_global_assignment -name VERILOG_FILE src/common/ps2_device.v
+set_global_assignment -name VERILOG_FILE src/common/simple_fifo.v
+set_global_assignment -name VERILOG_FILE src/common/simple_fifo_mlab.v
+set_global_assignment -name VERILOG_FILE src/common/simple_mult.v
+set_global_assignment -name VERILOG_FILE src/common/simple_ram.v
+set_global_assignment -name SYSTEMVERILOG_FILE src/common/synchronizer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE src/common/uart_fixed.v
+set_global_assignment -name VERILOG_FILE src/common/uart_tx_V2.v
+
+set_global_assignment -name SYSTEMVERILOG_FILE src/soc/dma.v
+set_global_assignment -name VERILOG_FILE src/soc/floppy.v
+set_global_assignment -name VERILOG_FILE src/soc/hps_ext.v
+set_global_assignment -name VERILOG_FILE src/soc/ide.v
+set_global_assignment -name VERILOG_FILE src/soc/pic.v
+set_global_assignment -name VERILOG_FILE src/soc/pit.v
+set_global_assignment -name VERILOG_FILE src/soc/pit_counter.v
+set_global_assignment -name VERILOG_FILE src/soc/ps2.v
+set_global_assignment -name VERILOG_FILE src/soc/rtc.v
+set_global_assignment -name VERILOG_FILE src/soc/vga.v
+set_global_assignment -name QIP_FILE src/soc/sound/sound.qip
