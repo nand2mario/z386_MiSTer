@@ -296,8 +296,6 @@ def prepare_seed_work_tree(project_dir: Path, seed_dir: Path) -> Path:
     work_root.mkdir(parents=True)
 
     copy_project_for_seed(project_dir, work_root / project_dir.name)
-    copy_core_for_seed(repo_root, work_root / "17.z386")
-    copy_ao486_sys_for_seed(repo_root, work_root / "ao486_MiSTer" / "sys")
 
     return work_root / project_dir.name
 
