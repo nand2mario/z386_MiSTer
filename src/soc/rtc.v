@@ -56,18 +56,6 @@ module rtc #(
 reg [27:0] clk_rate;
 always @(posedge clk) clk_rate <= clock_rate;
 
-reg ce_800hz;
-always @(posedge clk) begin
-	automatic reg [27:0] sum = 0;
-
-	ce_800hz = 0;
-	sum = sum + 28'd800;
-	if(sum >= clk_rate) begin
-		sum = sum - clk_rate;
-		ce_800hz = 1;
-	end
-end
-
 reg ce_8192hz;
 always @(posedge clk) begin
 	automatic reg [27:0] sum = 0;
@@ -81,6 +69,10 @@ always @(posedge clk) begin
 end
 
 //------------------------------------------------------------------------------
+
+wire rtc_clock_running = ~(crb_freeze || divider[2:1] == 2'b11);
+wire rtc_update_in_progress = rtc_clock_running && second_major <= 13'd1;
+wire rtc_second_update = rtc_clock_running && ce_8192hz && second_major == 13'd0;
 
 reg [7:0] mgmt_ext_mem_msb;
 reg [15:0] mgmt_checksum;
@@ -116,7 +108,7 @@ wire [7:0] io_readdata_next =
     (ram_address == 7'h07) ? rtc_dayofmonth :
     (ram_address == 7'h08) ? rtc_month :
     (ram_address == 7'h09) ? rtc_year :
-    (ram_address == 7'h0A) ? { sec_state == SEC_UPDATE_IN_PROGRESS || sec_state == SEC_SECOND_START, divider, periodic_rate } :
+    (ram_address == 7'h0A) ? { rtc_update_in_progress, divider, periodic_rate } :
     (ram_address == 7'h0B) ? { crb_freeze, crb_int_periodic_ena, crb_int_alarm_ena, crb_int_update_ena,
                                1'b0, crb_binarymode, crb_24hour, crb_daylightsaving } :
     (ram_address == 7'h0C) ? { irq, periodic_interrupt, alarm_interrupt, update_interrupt, 4'd0 } :
@@ -154,39 +146,23 @@ end
 
 //------------------------------------------------------------------------------ once per second state machine
 
-localparam [2:0] SEC_UPDATE_START       = 3'd0;
-localparam [2:0] SEC_UPDATE_IN_PROGRESS = 3'd1;
-localparam [2:0] SEC_SECOND_START       = 3'd2;
-localparam [2:0] SEC_SECOND_IN_PROGRESS = 3'd3;
-localparam [2:0] SEC_STOPPED            = 3'd4;
-
-reg [2:0] sec_state;
-
+// UIP should be high for about 244us before the RTC registers update.
+// Count 8192Hz ticks so the second cadence and UIP window are independent.
+reg [12:0] second_major;
 always @(posedge clk) begin
-    if(rst_n == 1'b0)                                                sec_state <= SEC_UPDATE_START;
-    
-    else if(crb_freeze || divider[2:1] == 2'b11)                     sec_state <= SEC_STOPPED;
-    else if(sec_state == SEC_STOPPED)                                sec_state <= SEC_UPDATE_START;
-    
-    else if(sec_state == SEC_UPDATE_START)                           sec_state <= SEC_UPDATE_IN_PROGRESS;
-    else if(sec_state == SEC_UPDATE_IN_PROGRESS && !sec_timeout)     sec_state <= SEC_SECOND_START;
-    else if(sec_state == SEC_SECOND_START)                           sec_state <= SEC_SECOND_IN_PROGRESS;
-    else if(sec_state == SEC_SECOND_IN_PROGRESS && sec_timeout == 1) sec_state <= SEC_UPDATE_START;
-end
-
-reg [10:0] sec_timeout;
-always @(posedge clk) begin
-    if(rst_n == 1'b0)                               sec_timeout <= 4;
-    else if(crb_freeze || divider[2:1] == 2'b11)    sec_timeout <= 4;
-    else if(!sec_timeout)                           sec_timeout <= 799;
-    else if(ce_800hz)                               sec_timeout <= sec_timeout - 1'd1;
+    if(rst_n == 1'b0)             second_major <= 13'd8191;
+    else if(~rtc_clock_running)   second_major <= 13'd8191;
+    else if(ce_8192hz) begin
+        if(second_major == 13'd0) second_major <= 13'd8191;
+        else                      second_major <= second_major - 13'd1;
+    end
 end
 
 reg update_interrupt;
 always @(posedge clk) begin
     if(rst_n == 1'b0)                                                       update_interrupt <= 1'b0;
     else if(io_read_valid && io_address == 1'b1 && ram_address == 7'h0C)    update_interrupt <= 1'b0;
-    else if(sec_state == SEC_SECOND_START)                                  update_interrupt <= 1'b1;
+    else if(rtc_second_update)                                              update_interrupt <= 1'b1;
 end
 
 //------------------------------------------------------------------------------
@@ -308,7 +284,6 @@ wire [7:0] next_century =
     
 //------------------------------------------------------------------------------
 
-wire rtc_second_update = sec_state == SEC_SECOND_START;
 wire rtc_minute_update = rtc_second_update && max_second;
 wire rtc_hour_update   = rtc_minute_update && max_minute;
 wire rtc_day_update    = rtc_hour_update   && max_hour;
@@ -404,7 +379,7 @@ reg alarm_interrupt;
 always @(posedge clk) begin
     if(rst_n == 1'b0)                                                   alarm_interrupt <= 1'b0;
     else if(io_read_valid && io_address == 1'b1 && ram_address == 7'h0C)alarm_interrupt <= 1'b0;
-    else if(sec_state == SEC_SECOND_START && alarm_interrupt_activate)  alarm_interrupt <= 1'b1;
+    else if(rtc_second_update && alarm_interrupt_activate)              alarm_interrupt <= 1'b1;
 end
 
 //------------------------------------------------------------------------------

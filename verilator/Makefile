@@ -2,7 +2,7 @@ VERILATOR = verilator
 VERILATOR_BUILD_JOBS ?= 8
 SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
-VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --top-module z386_mister_system_core --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT
+VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_system_core --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -DZ386_ALTERA_ALU=1
 VERILATOR_INCLUDE = -I../src -I../../17.z386
 
 D=../src
@@ -11,7 +11,7 @@ DZ=../../17.z386
 SOURCES = ../rtl/z386_mister_system_core.sv \
 		  $(D)/system.sv \
 		  $(DZ)/z386_pkg.sv $(DZ)/ucode_rom.sv $(DZ)/z386.sv $(DZ)/decoder.sv \
-		  $(DZ)/alu.sv $(DZ)/biu.sv $(DZ)/prefetch.sv $(DZ)/segmentation_unit.sv \
+		  $(DZ)/alu.sv $(DZ)/alu_alt.sv $(DZ)/biu.sv $(DZ)/prefetch.sv $(DZ)/segmentation_unit.sv \
 		  $(DZ)/paging_unit.sv $(DZ)/paging_tlb.sv $(DZ)/paging_walker.sv \
 		  $(DZ)/dsp_mul.sv $(DZ)/protection.sv \
 		  $(D)/iobus_adapter.sv $(D)/pic_inta_bridge.sv \

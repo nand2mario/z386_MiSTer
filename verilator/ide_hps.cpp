@@ -4,11 +4,97 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 
 using std::cout;
 using std::ifstream;
 using std::ios;
 using std::string;
+
+template <typename T>
+static void write_pod(std::ostream& out, const T& value) {
+    out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+template <typename T>
+static void read_pod(std::istream& in, T& value) {
+    in.read(reinterpret_cast<char*>(&value), sizeof(value));
+}
+
+static void write_string(std::ostream& out, const std::string& value) {
+    uint32_t size = static_cast<uint32_t>(value.size());
+    write_pod(out, size);
+    out.write(value.data(), size);
+}
+
+static void read_string(std::istream& in, std::string& value) {
+    uint32_t size = 0;
+    read_pod(in, size);
+    value.resize(size);
+    in.read(value.data(), size);
+}
+
+static void write_vector_u8(std::ostream& out, const std::vector<uint8_t>& value) {
+    uint64_t size = static_cast<uint64_t>(value.size());
+    write_pod(out, size);
+    if (size) out.write(reinterpret_cast<const char*>(value.data()), static_cast<std::streamsize>(size));
+}
+
+static void read_vector_u8(std::istream& in, std::vector<uint8_t>& value) {
+    uint64_t size = 0;
+    read_pod(in, size);
+    value.resize(static_cast<size_t>(size));
+    if (size) in.read(reinterpret_cast<char*>(value.data()), static_cast<std::streamsize>(size));
+}
+
+static void write_regs(std::ostream& out, const HpsIdeRegs& regs) {
+    write_pod(out, regs.io_size);
+    write_pod(out, regs.error);
+    write_pod(out, regs.sector_count);
+    write_pod(out, regs.sector);
+    write_pod(out, regs.cylinder);
+    write_pod(out, regs.head);
+    write_pod(out, regs.drv);
+    write_pod(out, regs.lba);
+    write_pod(out, regs.cmd);
+    write_pod(out, regs.pkt_io_size);
+    write_pod(out, regs.status);
+}
+
+static void read_regs(std::istream& in, HpsIdeRegs& regs) {
+    read_pod(in, regs.io_size);
+    read_pod(in, regs.error);
+    read_pod(in, regs.sector_count);
+    read_pod(in, regs.sector);
+    read_pod(in, regs.cylinder);
+    read_pod(in, regs.head);
+    read_pod(in, regs.drv);
+    read_pod(in, regs.lba);
+    read_pod(in, regs.cmd);
+    read_pod(in, regs.pkt_io_size);
+    read_pod(in, regs.status);
+}
+
+static void write_drive(std::ostream& out, const HpsIdeDrive& drive) {
+    write_pod(out, drive.present);
+    write_pod(out, drive.cylinders);
+    write_pod(out, drive.heads);
+    write_pod(out, drive.spt);
+    write_pod(out, drive.total_sectors);
+    write_pod(out, drive.spb);
+    for (uint16_t word : drive.id) write_pod(out, word);
+}
+
+static void read_drive(std::istream& in, HpsIdeDrive& drive) {
+    read_pod(in, drive.present);
+    read_pod(in, drive.cylinders);
+    read_pod(in, drive.heads);
+    read_pod(in, drive.spt);
+    read_pod(in, drive.total_sectors);
+    read_pod(in, drive.spb);
+    for (uint16_t& word : drive.id) read_pod(in, word);
+}
 
 static uint16_t be_word(char hi, char lo) {
     return (static_cast<uint16_t>(hi) << 8) | static_cast<uint8_t>(lo);
@@ -23,6 +109,87 @@ static void set_ident_string(uint16_t* id, int word_base, int word_count, const 
 }
 
 HpsIde::HpsIde(uint8_t id, uint16_t base_addr) : id_(id), base_(base_addr) {}
+
+void HpsIde::save(std::ostream& out) const {
+    const uint32_t magic = 0x48494445; // HIDE
+    const uint32_t version = 1;
+    uint32_t state = static_cast<uint32_t>(state_);
+    uint32_t next_state = static_cast<uint32_t>(next_state_);
+    uint64_t sector_words_offset = std::numeric_limits<uint64_t>::max();
+
+    if (sector_words_ && !image_.empty()) {
+        const auto* image_begin = reinterpret_cast<const uint8_t*>(image_.data());
+        const auto* ptr = reinterpret_cast<const uint8_t*>(sector_words_);
+        if (ptr >= image_begin && ptr < image_begin + image_.size()) {
+            sector_words_offset = static_cast<uint64_t>(ptr - image_begin);
+        }
+    }
+
+    write_pod(out, magic);
+    write_pod(out, version);
+    write_pod(out, id_);
+    write_pod(out, base_);
+    write_pod(out, state);
+    write_pod(out, next_state);
+    write_regs(out, regs_);
+    write_drive(out, drive_);
+    write_vector_u8(out, image_);
+    write_string(out, image_name_);
+    write_pod(out, sector_words_offset);
+    write_pod(out, sector_);
+    write_pod(out, sector_count_);
+    write_pod(out, cylinder_);
+    write_pod(out, drv_addr_);
+    write_pod(out, cmd_);
+    out.write(reinterpret_cast<const char*>(buf_), sizeof(buf_));
+    write_pod(out, cnt_);
+    write_pod(out, irq_pending_);
+    write_pod(out, bus_cooldown_);
+    write_pod(out, debug_);
+}
+
+void HpsIde::load(std::istream& in) {
+    uint32_t magic = 0;
+    uint32_t version = 0;
+    uint32_t state = 0;
+    uint32_t next_state = 0;
+    uint64_t sector_words_offset = std::numeric_limits<uint64_t>::max();
+
+    read_pod(in, magic);
+    read_pod(in, version);
+    if (magic != 0x48494445 || version != 1) {
+        throw std::runtime_error("bad HpsIde checkpoint");
+    }
+
+    read_pod(in, id_);
+    read_pod(in, base_);
+    read_pod(in, state);
+    read_pod(in, next_state);
+    state_ = static_cast<State>(state);
+    next_state_ = static_cast<State>(next_state);
+    read_regs(in, regs_);
+    read_drive(in, drive_);
+    read_vector_u8(in, image_);
+    read_string(in, image_name_);
+    read_pod(in, sector_words_offset);
+    read_pod(in, sector_);
+    read_pod(in, sector_count_);
+    read_pod(in, cylinder_);
+    read_pod(in, drv_addr_);
+    read_pod(in, cmd_);
+    in.read(reinterpret_cast<char*>(buf_), sizeof(buf_));
+    read_pod(in, cnt_);
+    read_pod(in, irq_pending_);
+    read_pod(in, bus_cooldown_);
+    read_pod(in, debug_);
+
+    if (sector_words_offset != std::numeric_limits<uint64_t>::max() &&
+        sector_words_offset + 512 <= image_.size()) {
+        sector_words_ = reinterpret_cast<uint16_t*>(image_.data() + sector_words_offset);
+    } else {
+        sector_words_ = nullptr;
+    }
+}
 
 bool HpsIde::open(const string& path) {
     ifstream f(path, ios::binary);
@@ -302,15 +469,24 @@ void HpsIde::tick(Vz386_mister_system_core& tb) {
             pulse_read(tb, base_ + 1);
             state_ = GET_CMD;
         } else if (req == 6) {
-            regs_.head = 0;
-            regs_.error = 0;
-            regs_.sector = 1;
-            regs_.sector_count = 1;
-            regs_.cylinder = drive_.present ? 0x0000 : 0xFFFF;
-            regs_.status = ATA_STATUS_RDY;
-            state_ = SET_REGS;
-            next_state_ = RESET_SET;
+            pulse_read(tb, base_ + 5);
+            state_ = GET_RESET_DRIVE;
         }
+        break;
+    }
+
+    case GET_RESET_DRIVE: {
+        drv_addr_ = tb.mgmt_readdata & 0xFF;
+        regs_.drv = (drv_addr_ >> 4) & 0x1;
+        regs_.lba = (drv_addr_ >> 6) & 0x1;
+        regs_.head = 0;
+        regs_.error = 0;
+        regs_.sector = 1;
+        regs_.sector_count = 1;
+        regs_.cylinder = (drive_.present && regs_.drv == 0) ? 0x0000 : 0xFFFF;
+        regs_.status = ATA_STATUS_RDY;
+        state_ = SET_REGS;
+        next_state_ = RESET_SET;
         break;
     }
 
@@ -477,7 +653,18 @@ void HpsIde::tick(Vz386_mister_system_core& tb) {
         irq_pending_ = ATA_STATUS_IRQ;
         regs_.io_size = 1;
         state_ = SET_REGS;
-        next_state_ = WRITE_RECV;
+        next_state_ = WRITE_WAIT_REQ;
+        break;
+    }
+
+    case WRITE_WAIT_REQ: {
+        uint8_t req = id_ ? tb.ide1_request : tb.ide0_request;
+        if (req == 5) {
+            cnt_ = 0;
+            state_ = WRITE_RECV;
+        } else if (req != 0) {
+            state_ = IDLE;
+        }
         break;
     }
 
@@ -489,8 +676,13 @@ void HpsIde::tick(Vz386_mister_system_core& tb) {
         } else {
             cnt_ = 0;
             put_lba(get_lba() + 1);
-            if (--regs_.sector_count) state_ = WRITE_REGS;
-            else state_ = IDLE;
+            if (--regs_.sector_count) {
+                state_ = WRITE_REGS;
+            } else {
+                regs_.status = ATA_STATUS_RDY | ATA_STATUS_IRQ;
+                state_ = SET_REGS;
+                next_state_ = IDLE;
+            }
         }
         break;
     }

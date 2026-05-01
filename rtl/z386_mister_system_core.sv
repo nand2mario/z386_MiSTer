@@ -7,10 +7,15 @@ module z386_mister_system_core (
 
 	input  [63:0] status,
 	input  [10:0] ps2_key,
+	input         ps2_mouse_clk_out,
+	input         ps2_mouse_data_out,
+	output        ps2_mouse_clk_in,
+	output        ps2_mouse_data_in,
 	input   [7:0] sim_kbd_data,
 	input         sim_kbd_data_valid,
 	output  [8:0] sim_kbd_host_data,
 	input         sim_kbd_host_data_clear,
+	input         sim_soft_reset,
 
 	input         ioctl_download,
 	input  [15:0] ioctl_index,
@@ -67,7 +72,8 @@ module z386_mister_system_core (
 	output        dbg_pe,
 	output  [7:0] dbg_post_code,
 	output  [7:0] dbg_uart_byte,
-	output        dbg_uart_we
+	output        dbg_uart_we,
+	output        soft_reset_req
 );
 
 parameter [27:0] CLOCK_RATE_HZ = 28'd50_000_000;
@@ -75,11 +81,14 @@ parameter [27:0] CLOCK_RATE_HZ = 28'd50_000_000;
 wire        software_reset;
 reg  [7:0]  software_reset_count;
 wire        core_reset = reset | (software_reset_count != 8'd0);
+assign soft_reset_req = software_reset;
 
 wire  [7:0] syscfg;
 
 reg   [7:0] kbd_data;
 reg         kbd_data_valid;
+reg   [7:0] mouse_data;
+reg         mouse_data_valid;
 wire  [8:0] kbd_host_data;
 wire  [8:0] mouse_host_cmd;
 wire        kbd_host_data_clear;
@@ -90,6 +99,10 @@ reg  [23:0] kbd_bytes_r;
 reg   [1:0] kbd_count_r;
 reg  [23:0] kbd_reply_bytes_r;
 reg   [1:0] kbd_reply_count_r;
+reg  [31:0] mouse_reply_bytes_r;
+reg   [2:0] mouse_reply_count_r;
+reg   [7:0] pending_mouse_cmd_r;
+reg         pending_mouse_arg_r;
 
 `ifndef VERILATOR
 reg         kbd_host_data_clear_r;
@@ -171,7 +184,11 @@ assign active = debug_first_instruction | debug_post_write | kbd_data_valid;
 always @(posedge clk_sys) begin
 	if (reset) begin
 		software_reset_count <= 8'd0;
-	end else if (software_reset) begin
+`ifdef VERILATOR
+	end else if (software_reset | sim_soft_reset) begin
+`else
+	end else if (sim_soft_reset) begin
+`endif
 		software_reset_count <= 8'hff;
 	end else if (software_reset_count != 8'd0) begin
 		software_reset_count <= software_reset_count - 8'd1;
@@ -180,6 +197,7 @@ end
 
 always @(posedge clk_sys) begin
 	kbd_data_valid <= 1'b0;
+	mouse_data_valid <= 1'b0;
 
 	if (reset) begin
 		ps2_key_stb_r <= ps2_key[10];
@@ -188,6 +206,11 @@ always @(posedge clk_sys) begin
 		kbd_reply_bytes_r <= 24'd0;
 		kbd_reply_count_r <= 2'd0;
 		kbd_data <= 8'd0;
+		mouse_reply_bytes_r <= 32'd0;
+		mouse_reply_count_r <= 3'd0;
+		pending_mouse_cmd_r <= 8'd0;
+		pending_mouse_arg_r <= 1'b0;
+		mouse_data <= 8'd0;
 `ifndef VERILATOR
 		kbd_host_data_clear_r <= 1'b0;
 		kbd_host_seen_r <= 1'b0;
@@ -285,6 +308,60 @@ always @(posedge clk_sys) begin
 			kbd_host_seen_r <= 1'b0;
 		end
 `endif
+
+		if (mouse_reply_count_r != 3'd0) begin
+			mouse_data <= mouse_reply_bytes_r[7:0];
+			mouse_data_valid <= 1'b1;
+			mouse_reply_bytes_r <= {8'd0, mouse_reply_bytes_r[31:8]};
+			mouse_reply_count_r <= mouse_reply_count_r - 3'd1;
+		end else if (mouse_host_cmd[8]) begin
+			if (pending_mouse_arg_r) begin
+				mouse_reply_bytes_r <= {24'd0, 8'hFA};
+				mouse_reply_count_r <= 3'd1;
+				pending_mouse_cmd_r <= 8'd0;
+				pending_mouse_arg_r <= 1'b0;
+			end else begin
+				pending_mouse_cmd_r <= mouse_host_cmd[7:0];
+				case (mouse_host_cmd[7:0])
+					8'hFF: begin
+						// Reset: ACK, BAT OK, standard PS/2 mouse ID.
+						mouse_reply_bytes_r <= {8'd0, 8'h00, 8'hAA, 8'hFA};
+						mouse_reply_count_r <= 3'd3;
+						pending_mouse_cmd_r <= 8'd0;
+					end
+					8'hF2: begin
+						// Identify: ACK, standard PS/2 mouse ID.
+						mouse_reply_bytes_r <= {16'd0, 8'h00, 8'hFA};
+						mouse_reply_count_r <= 3'd2;
+						pending_mouse_cmd_r <= 8'd0;
+					end
+					8'hE9: begin
+						// Status request: ACK, status, resolution, sample rate.
+						mouse_reply_bytes_r <= {8'h64, 8'h02, 8'h00, 8'hFA};
+						mouse_reply_count_r <= 3'd4;
+						pending_mouse_cmd_r <= 8'd0;
+					end
+					8'hEB: begin
+						// Read data: ACK plus a neutral three-byte packet.
+						mouse_reply_bytes_r <= {8'h00, 8'h00, 8'h08, 8'hFA};
+						mouse_reply_count_r <= 3'd4;
+						pending_mouse_cmd_r <= 8'd0;
+					end
+					8'hE8,
+					8'hF3: begin
+						// Resolution/sample-rate commands consume one parameter.
+						mouse_reply_bytes_r <= {24'd0, 8'hFA};
+						mouse_reply_count_r <= 3'd1;
+						pending_mouse_arg_r <= 1'b1;
+					end
+					default: begin
+						mouse_reply_bytes_r <= {24'd0, 8'hFA};
+						mouse_reply_count_r <= 3'd1;
+						pending_mouse_cmd_r <= 8'd0;
+					end
+				endcase
+			end
+		end
 
 		if (sim_kbd_data_valid) begin
 			kbd_data <= sim_kbd_data;
@@ -384,8 +461,12 @@ system #(
 	.kbd_host_data       (kbd_host_data),
 	.kbd_host_data_clear (kbd_host_data_clear),
 
-	.mouse_data          (8'd0),
-	.mouse_data_valid    (1'b0),
+	.ps2_mouseclk_in     (ps2_mouse_clk_out),
+	.ps2_mousedat_in     (ps2_mouse_data_out),
+	.ps2_mouseclk_out    (ps2_mouse_clk_in),
+	.ps2_mousedat_out    (ps2_mouse_data_in),
+	.mouse_data          (mouse_data),
+	.mouse_data_valid    (mouse_data_valid),
 	.mouse_host_cmd      (mouse_host_cmd),
 	.mouse_host_cmd_clear(mouse_host_cmd_clear),
 

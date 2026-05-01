@@ -3,6 +3,7 @@
 #include "Vz386_mister_system_core.h"
 
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -46,11 +47,14 @@ public:
     bool present() const { return drive_.present; }
     void set_debug(bool debug) { debug_ = debug; }
     void tick(Vz386_mister_system_core& tb);
+    void save(std::ostream& out) const;
+    void load(std::istream& in);
 
 private:
     enum State {
         INITIAL,
         IDLE,
+        GET_RESET_DRIVE,
         RESET_SET,
         GET_CMD,
         DO_CMD,
@@ -63,6 +67,7 @@ private:
         READ_WAIT_REQ,
         WRITE,
         WRITE_REGS,
+        WRITE_WAIT_REQ,
         WRITE_RECV
     };
 

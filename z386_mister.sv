@@ -104,10 +104,8 @@ module emu
 
 localparam CLOCK_RATE_HZ = 85_000_000;
 
-// Report ourselves as AO486 so Main_MiSTer is compatible
 localparam CONF_STR = {
-//	"Z386;UART115200;",
-	"AO486;UART115200;",
+	"Z386;UART115200;",
 	"S0,IMGIMAVFD,Floppy A:;",
 	"S1,IMGIMAVFD,Floppy B:;",
 	"-;",
@@ -124,6 +122,7 @@ wire        clk_sys;
 wire        clk_sdram;
 wire        pll_locked;
 wire        reset_async = RESET | ~pll_locked;
+wire        core_soft_reset_req;
 wire        reset_req = buttons[1] | status[0];
 reg  [2:0]  reset_sync_r = 3'b111;
 
@@ -391,7 +390,7 @@ hps_ext hps_ext
 
     .ext_midi          (),
     .ext_req           (mgmt_req),
-    .ext_hotswap       (2'b00)
+    .ext_hotswap       (status[39:38])
 );
 
 z386_mister_system_core #(
@@ -402,10 +401,15 @@ z386_mister_system_core #(
 	.clk_audio          (CLK_AUDIO),
 	.status             (status[63:0]),
 	.ps2_key            (ps2_key),
+	.ps2_mouse_clk_out  (ps2_mouse_clk_out),
+	.ps2_mouse_data_out (ps2_mouse_data_out),
+	.ps2_mouse_clk_in   (ps2_mouse_clk_in),
+	.ps2_mouse_data_in  (ps2_mouse_data_in),
 	.sim_kbd_data       (8'd0),
 	.sim_kbd_data_valid (1'b0),
 	.sim_kbd_host_data  (),
 	.sim_kbd_host_data_clear(1'b0),
+	.sim_soft_reset     (1'b0),
 	.ioctl_download     (ioctl_download),
 	.ioctl_index        (ioctl_index),
 	.ioctl_wr           (ioctl_wr),
@@ -453,7 +457,8 @@ z386_mister_system_core #(
 	.debug_bios_loaded_o(core_bios_loaded),
 	.debug_first_instruction_o(core_first_instruction),
 	.dbg_uart_byte      (core_dbg_uart_byte),
-	.dbg_uart_we        (core_dbg_uart_we)
+	.dbg_uart_we        (core_dbg_uart_we),
+	.soft_reset_req     (core_soft_reset_req)
 );
 
 always @(*) begin
@@ -600,7 +605,7 @@ assign FB_PAL_WR     = 1'b0;
 assign LED_USER      = pll_locked;
 assign LED_POWER     = {1'b1, core_bios_loaded};
 assign LED_DISK      = {1'b1, core_first_instruction};
-assign BUTTONS       = 2'b00;
+assign BUTTONS       = {core_soft_reset_req, 1'b0};
 
 assign AUDIO_L       = core_audio_l;
 assign AUDIO_R       = core_audio_r;

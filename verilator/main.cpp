@@ -7,17 +7,22 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <deque>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "verilated_save.h"
 
 #include "ide_hps.h"
 
@@ -30,6 +35,7 @@ using std::map;
 using std::pair;
 using std::string;
 using std::vector;
+namespace fs = std::filesystem;
 
 #include "../../12.386tang/verilator/scancode.h"
 
@@ -53,8 +59,8 @@ static uint64_t trace_start_cycle = 0;
 static uint64_t current_cycle = 0;
 
 static string disk_path = "../../sdcard/freedos.img";
-static string boot0_path = "../../10.z386-sim/seabios/out/bios.bin";
-static string boot1_path = "../../10.z386-sim/seabios/out/vgabios.bin";
+static string boot0_path = "boot0.rom";
+static string boot1_path = "boot1.rom";
 static std::array<bool, 256> boot_pages_seen{};
 static constexpr uint32_t DDR_SHMEM_BASE = 0x30000000;
 static constexpr size_t DDR_SIZE = 16 * 1024 * 1024;
@@ -82,6 +88,91 @@ static bool g_headless = false;
 static bool g_ide_debug = true;
 static Pixel screenbuffer[H_RES * V_RES]{};
 static Pixel presentbuffer[H_RES * V_RES]{};
+
+template <typename T>
+static void write_pod(std::ostream& out, const T& value) {
+	out.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+template <typename T>
+static void read_pod(std::istream& in, T& value) {
+	in.read(reinterpret_cast<char*>(&value), sizeof(value));
+}
+
+static void write_vector_u8(std::ostream& out, const std::vector<uint8_t>& value) {
+	uint64_t size = static_cast<uint64_t>(value.size());
+	write_pod(out, size);
+	if (size) out.write(reinterpret_cast<const char*>(value.data()), static_cast<std::streamsize>(size));
+}
+
+static void read_vector_u8(std::istream& in, std::vector<uint8_t>& value) {
+	uint64_t size = 0;
+	read_pod(in, size);
+	value.resize(static_cast<size_t>(size));
+	if (size) in.read(reinterpret_cast<char*>(value.data()), static_cast<std::streamsize>(size));
+}
+
+static void write_vector_u64(std::ostream& out, const std::vector<uint64_t>& value) {
+	uint64_t size = static_cast<uint64_t>(value.size());
+	write_pod(out, size);
+	for (uint64_t item : value) write_pod(out, item);
+}
+
+static void read_vector_u64(std::istream& in, std::vector<uint64_t>& value) {
+	uint64_t size = 0;
+	read_pod(in, size);
+	value.resize(static_cast<size_t>(size));
+	for (uint64_t& item : value) read_pod(in, item);
+}
+
+static void write_string(std::ostream& out, const std::string& value) {
+	uint32_t size = static_cast<uint32_t>(value.size());
+	write_pod(out, size);
+	out.write(value.data(), size);
+}
+
+static void read_string(std::istream& in, std::string& value) {
+	uint32_t size = 0;
+	read_pod(in, size);
+	value.resize(size);
+	in.read(value.data(), size);
+}
+
+static void write_deque_u8(std::ostream& out, const deque<uint8_t>& value) {
+	uint64_t size = static_cast<uint64_t>(value.size());
+	write_pod(out, size);
+	for (uint8_t byte : value) write_pod(out, byte);
+}
+
+static void read_deque_u8(std::istream& in, deque<uint8_t>& value) {
+	uint64_t size = 0;
+	read_pod(in, size);
+	value.clear();
+	for (uint64_t i = 0; i < size; ++i) {
+		uint8_t byte = 0;
+		read_pod(in, byte);
+		value.push_back(byte);
+	}
+}
+
+static void write_scheduled_events(std::ostream& out, const std::vector<ScheduledPs2Bytes>& value) {
+	uint64_t size = static_cast<uint64_t>(value.size());
+	write_pod(out, size);
+	for (const auto& event : value) {
+		write_pod(out, event.cycle);
+		write_vector_u8(out, event.bytes);
+	}
+}
+
+static void read_scheduled_events(std::istream& in, std::vector<ScheduledPs2Bytes>& value) {
+	uint64_t size = 0;
+	read_pod(in, size);
+	value.resize(static_cast<size_t>(size));
+	for (auto& event : value) {
+		read_pod(in, event.cycle);
+		read_vector_u8(in, event.bytes);
+	}
+}
 
 static constexpr std::array<uint32_t, 16> kVgaPalette = {{
 	0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
@@ -350,8 +441,8 @@ static void configure_cmos(bool hdd0_present, bool floppy0_present, bool boot_fr
 
 	uint8_t cmos[128] = {};
 
-	// Match the 386tang default: 4MB total, so 3MB extended.
-	const uint16_t ext_mem_kb = 3 * 1024;
+	// 16MB total, so 15MB extended.
+	const uint16_t ext_mem_kb = 15 * 1024;
 
 	cmos[0x00] = bin2bcd(tm.tm_sec);
 	cmos[0x02] = bin2bcd(tm.tm_min);
@@ -400,7 +491,7 @@ static void configure_x86_management(bool hdd0_present) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_system_core [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--screen-at cycle] [--no-ide]\n";
+	cout << "Usage: Vz386_mister_system_core [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
 }
 
 int main(int argc, char** argv) {
@@ -410,7 +501,12 @@ int main(int argc, char** argv) {
 
 	bool enable_trace = false;
 	uint64_t max_cycles = std::numeric_limits<uint64_t>::max();
+	string checkpoint_dir;
+	uint64_t checkpoint_interval_sec = 0;
+	size_t checkpoint_keep = 6;
+	string restore_path;
 	vector<uint64_t> enter_cycles;
+	vector<uint64_t> ctrl_alt_del_cycles;
 
 	for (int i = 1; i < argc; ++i) {
 		string arg = argv[i];
@@ -418,6 +514,7 @@ int main(int argc, char** argv) {
 			enable_trace = true;
 		} else if (arg == "--trace-start" && i + 1 < argc) {
 			trace_start_cycle = std::stoull(argv[++i]);
+			enable_trace = true;
 		} else if (arg == "--headless") {
 			g_headless = true;
 		} else if (arg == "--cycles" && i + 1 < argc) {
@@ -430,16 +527,30 @@ int main(int argc, char** argv) {
 			boot1_path = argv[++i];
 		} else if (arg == "--enter-at" && i + 1 < argc) {
 			enter_cycles.push_back(std::stoull(argv[++i]));
+		} else if (arg == "--ctrl-alt-del-at" && i + 1 < argc) {
+			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]));
 		} else if (arg == "--screen-at" && i + 1 < argc) {
 			screen_check_cycles.push_back(std::stoull(argv[++i]));
 		} else if (arg == "--ide") {
 			g_ide_debug = true;
 		} else if (arg == "--no-ide") {
 			g_ide_debug = false;
+		} else if (arg == "--checkpoint-dir" && i + 1 < argc) {
+			checkpoint_dir = argv[++i];
+		} else if (arg == "--checkpoint-interval-sec" && i + 1 < argc) {
+			checkpoint_interval_sec = std::stoull(argv[++i]);
+		} else if (arg == "--checkpoint-keep" && i + 1 < argc) {
+			checkpoint_keep = static_cast<size_t>(std::stoull(argv[++i]));
+		} else if (arg == "--restore" && i + 1 < argc) {
+			restore_path = argv[++i];
 		} else {
 			usage();
 			return 1;
 		}
+	}
+
+	if (!checkpoint_dir.empty() && checkpoint_interval_sec == 0) {
+		checkpoint_interval_sec = 600;
 	}
 
 	for (uint64_t cycle : enter_cycles) {
@@ -451,25 +562,41 @@ int main(int argc, char** argv) {
 			ps2_events.push_back({cycle, bytes});
 		}
 	}
+	for (uint64_t cycle : ctrl_alt_del_cycles) {
+		std::vector<uint8_t> bytes;
+		for (SDL_Keycode key : {SDLK_LCTRL, SDLK_LALT, SDLK_DELETE}) {
+			auto it = ps2scancodes.find(key);
+			if (it != ps2scancodes.end())
+				bytes.insert(bytes.end(), it->second.first.begin(), it->second.first.end());
+		}
+		for (SDL_Keycode key : {SDLK_DELETE, SDLK_LALT, SDLK_LCTRL}) {
+			auto it = ps2scancodes.find(key);
+			if (it != ps2scancodes.end())
+				bytes.insert(bytes.end(), it->second.second.begin(), it->second.second.end());
+		}
+		ps2_events.push_back({cycle, bytes});
+	}
 	std::sort(ps2_events.begin(), ps2_events.end(),
 		[](const ScheduledPs2Bytes& a, const ScheduledPs2Bytes& b) { return a.cycle < b.cycle; });
 	std::sort(screen_check_cycles.begin(), screen_check_cycles.end());
 
 	vector<uint8_t> boot0;
 	vector<uint8_t> boot1;
-	try {
-		boot0 = read_file(boot0_path);
-		boot1 = read_file(boot1_path);
-	} catch (const std::exception& e) {
-		cerr << e.what() << "\n";
-		return 1;
+	if (restore_path.empty()) {
+		try {
+			boot0 = read_file(boot0_path);
+			boot1 = read_file(boot1_path);
+		} catch (const std::exception& e) {
+			cerr << e.what() << "\n";
+			return 1;
+		}
 	}
 
 	HpsIde ide0(0, 0xF000);
 	HpsIde ide1(1, 0xF100);
 	ide0.set_debug(g_ide_debug);
 	ide1.set_debug(g_ide_debug);
-	if (!ide0.open(disk_path)) {
+	if (restore_path.empty() && !ide0.open(disk_path)) {
 		cerr << "failed to open disk image " << disk_path << "\n";
 		return 1;
 	}
@@ -546,11 +673,13 @@ int main(int argc, char** argv) {
 
 	if (enable_trace) set_trace(true);
 
-	stage_roms_to_ddr(boot0, boot1);
-	full_step();
-	tb.reset = 0;
-	full_step();
-	configure_x86_management(ide0.present());
+	if (restore_path.empty()) {
+		stage_roms_to_ddr(boot0, boot1);
+		full_step();
+		tb.reset = 0;
+		full_step();
+		configure_x86_management(ide0.present());
+	}
 	trace_loop_started = true;
 
 	bool saw_first_instruction = false;
@@ -565,15 +694,22 @@ int main(int argc, char** argv) {
 	bool prev_hs = false;
 	bool prev_de = false;
 	bool bios_dbg_wr_prev = false;
+	int sim_soft_reset_cycles = 0;
+	bool gui_r_soft_reset_active = false;
+	bool gui_c_checkpoint_active = false;
 	uint8_t last_post = 0;
 	bool have_post = false;
 	bool running = true;
+	uint64_t loop_start_cycle = 0;
+	auto next_checkpoint_at = std::chrono::steady_clock::now() +
+		std::chrono::seconds(checkpoint_interval_sec ? checkpoint_interval_sec : 1);
 	auto* core = tb.z386_mister_system_core;
 	auto* sys = core->system_i;
 
 	tb.sim_kbd_data = 0;
 	tb.sim_kbd_data_valid = 0;
 	tb.sim_kbd_host_data_clear = 0;
+	tb.sim_soft_reset = 0;
 
 	auto keyboard_send_pre = [&](uint64_t cycle) {
 		tb.sim_kbd_host_data_clear = kbd_host_clear_pending;
@@ -691,8 +827,207 @@ int main(int argc, char** argv) {
 		prev_de = tb.video_de;
 	};
 
-	for (uint64_t cycle = 0; cycle < max_cycles && running; ++cycle) {
+	auto resolve_restore_path = [](const string& path) -> fs::path {
+		fs::path p(path);
+		fs::path latest = p / "latest.txt";
+		if (!fs::exists(p / "model.vlt") && fs::exists(latest)) {
+			std::ifstream in(latest);
+			string line;
+			std::getline(in, line);
+			if (!line.empty()) return fs::path(line);
+		}
+		return p;
+	};
+
+	auto prune_checkpoints = [&]() {
+		if (checkpoint_dir.empty() || checkpoint_keep == 0) return;
+
+		std::vector<fs::path> entries;
+		for (const auto& entry : fs::directory_iterator(checkpoint_dir)) {
+			if (!entry.is_directory()) continue;
+			string name = entry.path().filename().string();
+			if (name.rfind("ckpt_", 0) == 0 && name.find(".tmp") == string::npos) {
+				entries.push_back(entry.path());
+			}
+		}
+
+		std::sort(entries.begin(), entries.end());
+		while (entries.size() > checkpoint_keep) {
+			fs::remove_all(entries.front());
+			entries.erase(entries.begin());
+		}
+	};
+
+	auto save_checkpoint = [&](uint64_t cycle) {
+		if (checkpoint_dir.empty()) return;
+
+		fs::create_directories(checkpoint_dir);
+		std::ostringstream name;
+		name << "ckpt_" << std::setw(16) << std::setfill('0') << cycle;
+		fs::path final_dir = fs::path(checkpoint_dir) / name.str();
+		fs::path tmp_dir = fs::path(checkpoint_dir) / (name.str() + ".tmp");
+
+		fs::remove_all(tmp_dir);
+		fs::create_directories(tmp_dir);
+
+		{
+			VerilatedSave save;
+			save.open((tmp_dir / "model.vlt").string());
+			save << tb;
+			save.close();
+		}
+
+		{
+			std::ofstream out(tmp_dir / "harness.bin", ios::binary);
+			const uint32_t magic = 0x5A434B50; // ZCKP
+			const uint32_t version = 1;
+			write_pod(out, magic);
+			write_pod(out, version);
+			write_pod(out, sim_time);
+			write_pod(out, current_cycle);
+			write_pod(out, posedge);
+			write_vector_u8(out, ddram_mem);
+			write_pod(out, ddram_resp_valid);
+			write_pod(out, ddram_resp_data);
+			write_scheduled_events(out, ps2_events);
+			write_pod(out, next_ps2_event);
+			write_deque_u8(out, kbd_scancode_queue);
+			write_pod(out, last_kbd_byte_time);
+			write_pod(out, ps2_kbd_scan_set);
+			write_pod(out, pending_kbd_cmd);
+			write_pod(out, pending_kbd_arg);
+			write_pod(out, kbd_host_busy);
+			write_pod(out, kbd_host_clear_pending);
+			write_vector_u64(out, screen_check_cycles);
+			write_pod(out, next_screen_check);
+			for (bool seen : boot_pages_seen) {
+				uint8_t value = seen ? 1 : 0;
+				write_pod(out, value);
+			}
+			write_pod(out, saw_first_instruction);
+			write_pod(out, saw_post);
+			write_pod(out, saw_video_sync);
+			write_pod(out, saw_boot_sector);
+			write_pod(out, saw_post_boot_exec);
+			write_pod(out, saw_boot_menu_text);
+			write_pod(out, saw_nonblack_pixel);
+			write_pod(out, boot_page_logs);
+			write_pod(out, prev_vs);
+			write_pod(out, prev_hs);
+			write_pod(out, prev_de);
+			write_pod(out, bios_dbg_wr_prev);
+			write_pod(out, last_post);
+			write_pod(out, have_post);
+			write_pod(out, last_title_sim_time);
+			write_pod(out, resolution_x);
+			write_pod(out, resolution_y);
+			write_pod(out, next_console_text_check);
+			write_string(out, last_console_text);
+			ide0.save(out);
+			ide1.save(out);
+		}
+
+		{
+			std::ofstream meta(tmp_dir / "meta.txt");
+			meta << "cycle " << cycle << "\n";
+			meta << "sim_time " << sim_time << "\n";
+			meta << "disk " << disk_path << "\n";
+			meta << "boot0 " << boot0_path << "\n";
+			meta << "boot1 " << boot1_path << "\n";
+		}
+
+		fs::remove_all(final_dir);
+		fs::rename(tmp_dir, final_dir);
+		{
+			std::ofstream latest(fs::path(checkpoint_dir) / "latest.txt");
+			latest << final_dir.string() << "\n";
+		}
+		prune_checkpoints();
+		cout << cycle << ": checkpoint saved to " << final_dir << "\n";
+	};
+
+	auto restore_checkpoint = [&]() {
+		if (restore_path.empty()) return;
+
+		fs::path dir = resolve_restore_path(restore_path);
+		{
+			VerilatedRestore restore;
+			restore.open((dir / "model.vlt").string());
+			restore >> tb;
+			restore.close();
+		}
+
+		{
+			std::ifstream in(dir / "harness.bin", ios::binary);
+			uint32_t magic = 0;
+			uint32_t version = 0;
+			read_pod(in, magic);
+			read_pod(in, version);
+			if (magic != 0x5A434B50 || version != 1) {
+				throw std::runtime_error("bad simulator checkpoint");
+			}
+			read_pod(in, sim_time);
+			read_pod(in, current_cycle);
+			read_pod(in, posedge);
+			read_vector_u8(in, ddram_mem);
+			read_pod(in, ddram_resp_valid);
+			read_pod(in, ddram_resp_data);
+			read_scheduled_events(in, ps2_events);
+			read_pod(in, next_ps2_event);
+			read_deque_u8(in, kbd_scancode_queue);
+			read_pod(in, last_kbd_byte_time);
+			read_pod(in, ps2_kbd_scan_set);
+			read_pod(in, pending_kbd_cmd);
+			read_pod(in, pending_kbd_arg);
+			read_pod(in, kbd_host_busy);
+			read_pod(in, kbd_host_clear_pending);
+			read_vector_u64(in, screen_check_cycles);
+			read_pod(in, next_screen_check);
+			for (auto& seen : boot_pages_seen) {
+				uint8_t value = 0;
+				read_pod(in, value);
+				seen = value != 0;
+			}
+			read_pod(in, saw_first_instruction);
+			read_pod(in, saw_post);
+			read_pod(in, saw_video_sync);
+			read_pod(in, saw_boot_sector);
+			read_pod(in, saw_post_boot_exec);
+			read_pod(in, saw_boot_menu_text);
+			read_pod(in, saw_nonblack_pixel);
+			read_pod(in, boot_page_logs);
+			read_pod(in, prev_vs);
+			read_pod(in, prev_hs);
+			read_pod(in, prev_de);
+			read_pod(in, bios_dbg_wr_prev);
+			read_pod(in, last_post);
+			read_pod(in, have_post);
+			read_pod(in, last_title_sim_time);
+			read_pod(in, resolution_x);
+			read_pod(in, resolution_y);
+			read_pod(in, next_console_text_check);
+			read_string(in, last_console_text);
+			ide0.load(in);
+			ide1.load(in);
+		}
+
+		loop_start_cycle = current_cycle + 1;
+		next_checkpoint_at = std::chrono::steady_clock::now() +
+			std::chrono::seconds(checkpoint_interval_sec ? checkpoint_interval_sec : 1);
+		cout << "restored checkpoint " << dir << " at cycle " << current_cycle << "\n";
+	};
+
+	try {
+		restore_checkpoint();
+	} catch (const std::exception& e) {
+		cerr << e.what() << "\n";
+		return 1;
+	}
+
+	for (uint64_t cycle = loop_start_cycle; cycle < max_cycles && running; ++cycle) {
 		current_cycle = cycle;
+		tb.sim_soft_reset = (sim_soft_reset_cycles > 0) ? 1 : 0;
+		if (sim_soft_reset_cycles > 0) sim_soft_reset_cycles--;
 		tb.mgmt_read = 0;
 		tb.mgmt_write = 0;
 		ide0.tick(tb);
@@ -718,6 +1053,18 @@ int main(int argc, char** argv) {
 		}
 		bios_dbg_wr_prev = bios_dbg_wr;
 
+		if (!checkpoint_dir.empty() && checkpoint_interval_sec != 0 &&
+		    std::chrono::steady_clock::now() >= next_checkpoint_at) {
+			try {
+				save_checkpoint(cycle);
+			} catch (const std::exception& e) {
+				cerr << "checkpoint failed: " << e.what() << "\n";
+				running = false;
+			}
+			next_checkpoint_at = std::chrono::steady_clock::now() +
+				std::chrono::seconds(checkpoint_interval_sec);
+		}
+
 		if (!g_headless) {
 			uint32_t now = get_ticks_ms();
 			SDL_Event e;
@@ -731,8 +1078,26 @@ int main(int argc, char** argv) {
 					bool trace_hotkey =
 						(e.key.keysym.scancode == SDL_SCANCODE_T) &&
 						(mods & (KMOD_GUI | KMOD_CTRL));
+					bool soft_reset_hotkey =
+						(e.key.keysym.scancode == SDL_SCANCODE_R) &&
+						(mods & KMOD_GUI);
+					bool checkpoint_hotkey =
+						(e.key.keysym.scancode == SDL_SCANCODE_C) &&
+						(mods & KMOD_GUI);
 					if (trace_hotkey) {
 						set_trace(!trace_toggle);
+					} else if (soft_reset_hotkey) {
+						gui_r_soft_reset_active = true;
+						sim_soft_reset_cycles = 8;
+						cout << cycle << ": GUI-R soft reset\n";
+					} else if (checkpoint_hotkey) {
+						gui_c_checkpoint_active = true;
+						if (checkpoint_dir.empty()) checkpoint_dir = "checkpoints";
+						try {
+							save_checkpoint(cycle);
+						} catch (const std::exception& e) {
+							cerr << "checkpoint failed: " << e.what() << "\n";
+						}
 					} else {
 						queue_sdl_key(e.key.keysym.sym, true);
 					}
@@ -741,7 +1106,17 @@ int main(int argc, char** argv) {
 					bool trace_hotkey =
 						(e.key.keysym.scancode == SDL_SCANCODE_T) &&
 						(mods & (KMOD_GUI | KMOD_CTRL));
-					if (!trace_hotkey) {
+					bool soft_reset_release =
+						gui_r_soft_reset_active &&
+						(e.key.keysym.scancode == SDL_SCANCODE_R);
+					bool checkpoint_release =
+						gui_c_checkpoint_active &&
+						(e.key.keysym.scancode == SDL_SCANCODE_C);
+					if (soft_reset_release) {
+						gui_r_soft_reset_active = false;
+					} else if (checkpoint_release) {
+						gui_c_checkpoint_active = false;
+					} else if (!trace_hotkey) {
 						queue_sdl_key(e.key.keysym.sym, false);
 					}
 				}
@@ -757,10 +1132,11 @@ int main(int argc, char** argv) {
 
 				if (now - last_title_ms >= 1000) {
 					uint64_t delta_cycles = (sim_time - last_title_sim_time) / 2;
+					bool trace_active = trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle;
 					char title[128];
 					snprintf(title, sizeof(title), "z386 MiSTer - %.1f MHz%s",
 						delta_cycles / 1000000.0,
-						trace_toggle ? " [TRACE]" : "");
+						trace_active ? " [TRACE]" : "");
 					SDL_SetWindowTitle(sdl_window, title);
 					last_title_ms = now;
 					last_title_sim_time = sim_time;

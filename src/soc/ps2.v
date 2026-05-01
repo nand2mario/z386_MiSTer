@@ -62,11 +62,12 @@ module ps2
 
 wire io_m_read    = io_read  & io_cs;
 wire io_m_write   = io_write & io_cs;
+wire sysctl_read  = io_read  & ctl_cs;
 wire sysctl_write = io_write & ctl_cs;
 
 always @(posedge clk) begin
-    if(io_cs) io_readdata <= io_readdata_next;
-    else      io_readdata <= sysctl_readdata_next;
+    if(io_m_read)       io_readdata <= io_readdata_next;
+    else if(sysctl_read) io_readdata <= sysctl_readdata_next;
 end
 
 //------------------------------------------------------------------------------

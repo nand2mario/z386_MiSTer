@@ -71,6 +71,11 @@ module system (
 	output  [8:0] kbd_host_data,        // {valid, data}
 	input         kbd_host_data_clear,
 
+	input         ps2_mouseclk_in,
+	input         ps2_mousedat_in,
+	output        ps2_mouseclk_out,
+	output        ps2_mousedat_out,
+
 	// Mouse byte stream (for injecting PS/2 mouse packets)
 	input   [7:0] mouse_data,
 	input         mouse_data_valid,
@@ -177,15 +182,8 @@ reg [15:0] rst /* synthesis syn_preserve = "true" */;
 always @(posedge clk_sys)
 	rst <= {16{reset}};
 
-reg hps_apply_reset_seen;
-always @(posedge clk_sys) begin
-	if(!reset) hps_apply_reset_seen <= 1'b0;
-	else if(hps_apply_reset) hps_apply_reset_seen <= 1'b1;
-end
-
-wire suppress_ide_reset = hps_apply_reset | hps_apply_reset_seen;
-wire ide0_reset = rst[3] & ~suppress_ide_reset;
-wire ide1_reset = rst[5] & ~suppress_ide_reset;
+wire ide0_reset = rst[3];
+wire ide1_reset = rst[5];
 
 wire        a20_enable;
 wire  [7:0] dma_floppy_readdata;
@@ -345,7 +343,8 @@ wire  [7:0] dma_io_readdata;
 wire  [7:0] pic_readdata;
 wire  [7:0] vga_io_readdata;
 
-// Internal main-memory request bundle shared by CPU runtime and boot loader.
+// CPU-facing cache request bundle. The boot loader feeds main_memory directly
+// through the mm_* mux below so its address path does not enter the cache.
 wire [31:0] avm_address;           // byte address
 wire [31:0] avm_writedata;
 wire [31:0] avm_readdata;
@@ -474,47 +473,28 @@ wire cpu_mem_write = cpu_write;
 wire [31:0] cpu_byte_addr_raw = a20_enable ? {cpu_addr, 2'b00}
                                            : {cpu_addr[31:21], 1'b0, cpu_addr[19:2], 2'b00};
 // Mirror the high 256 KiB reset-vector region to the copied ROM image.
-// Low 0xE0000-0xFFFFF remains normal writable RAM because SeaBIOS stores
-// variables there when PAM/shadow control is unavailable.
 wire is_bios_mirror_alias = &cpu_byte_addr_raw[31:18];    // 0xFFFC0000+
-// Low BIOS alias: 0x000E0000-0x000FFFFF → mirror, READ-ONLY
-// SeaBIOS uses 0xF0000-0xFFFFF for variables (writes must hit RAM, not mirror)
-// Low BIOS alias disabled — SeaBIOS stores variables at 0xF0000+
-// and the crash at 0xF7xxx was a different issue (now fixed by mgmt_write fix)
-wire is_bios_low_alias = 1'b0;
-wire [31:0] cpu_byte_addr = (is_bios_mirror_alias || is_bios_low_alias)
+wire [31:0] cpu_byte_addr = is_bios_mirror_alias
                           ? (BIOS_MIRROR_BASE + {14'd0, cpu_byte_addr_raw[17:0]})
                           : {7'h0, cpu_byte_addr_raw[24:0]};
 
-// Write-protect VGA BIOS area (0xC0000-0xDFFFF) so SeaBIOS's memset test preserves it.
-// 0xE0000-0xFFFFF must stay writable — SeaBIOS stores variables there and can't unlock PAM.
-wire is_vga_rom = (cpu_byte_addr[24:17] == 8'b0000_0110);  // 0xC0000-0xDFFFF only (not 0x1C0000, 0x2C0000, etc.)
-wire is_bios_mirror = cpu_byte_addr[23:18] == BIOS_MIRROR_BASE[23:18];
-wire is_protected_rom = is_vga_rom || is_bios_mirror;
-wire cpu_mem_bypass = boot_done && cpu_mem_valid && cpu_mem_write && is_protected_rom;
-wire [31:0] cpu_cache_lookup_addr_raw = a20_enable ? cpu_cache_lookup_addr
-                                                   : {cpu_cache_lookup_addr[31:21], 1'b0, cpu_cache_lookup_addr[19:0]};
-wire is_lookup_bios_mirror_alias = &cpu_cache_lookup_addr_raw[31:18];
-wire is_lookup_bios_low_alias = 1'b0;
-wire [31:0] cpu_cache_lookup_byte_addr = (is_lookup_bios_mirror_alias || is_lookup_bios_low_alias)
-                                       ? (BIOS_MIRROR_BASE + {14'd0, cpu_cache_lookup_addr_raw[17:0]})
-                                       : {7'h0, cpu_cache_lookup_addr_raw[24:0]};
-wire is_lookup_vga_rom = (cpu_cache_lookup_byte_addr[24:17] == 8'b0000_0110);
-wire is_lookup_bios_mirror = cpu_cache_lookup_byte_addr[23:18] == BIOS_MIRROR_BASE[23:18];
-wire is_lookup_protected_rom = is_lookup_vga_rom || is_lookup_bios_mirror;
-assign cpu_cache_lookup_bypass = boot_done && cpu_cache_lookup && cpu_cache_lookup_write && is_lookup_protected_rom;
-// Do not short-circuit lookup_ready for protected-ROM writes.
-// That creates a same-cycle path from cache state through paging launch logic and
-// back into the next TLB lookup. Protected-ROM writes still bypass the cache
-// preread below; they simply wait for the lookup port to go idle before launch.
+// After the boot ROM copy, UMA contains option ROM and BIOS ROM contents.
+// Treat only the physical 0x000C0000-0x000FFFFF window as write-protected.
+wire is_uma_rom = (cpu_byte_addr[24:18] == 7'b000_0011);
+wire cpu_mem_bypass = boot_done && cpu_mem_valid && cpu_mem_write && is_uma_rom;
+assign cpu_cache_lookup_bypass = 1'b0;
+// Keep the preread for every memory request. Under paging, a linear UMA address
+// can translate to normal RAM; only the later physical write decision is trusted.
 assign cpu_cache_lookup_ready = !boot_done || cpu_cache_lookup_ready_raw;
 
-// Pass CPU signals to cache (muxed with boot loader during boot)
-assign avm_address     = boot_done ? cpu_byte_addr : sd_avm_address;
-assign avm_writedata   = boot_done ? cpu_dout_z    : sd_avm_writedata;
-assign avm_byteenable  = boot_done ? cpu_be : sd_avm_byteenable;
-assign avm_valid       = boot_done ? (cpu_mem_valid && !cpu_mem_bypass) : sd_avm_write;
-assign avm_write       = boot_done ? cpu_mem_write : 1'b1;
+// Pass CPU signals to the cache. Keep the SD boot writer out of this bundle:
+// cache_enable/valid still gate the cache until boot_done, but removing the
+// boot mux avoids timing paths from sd_avm_address into cache preread state.
+assign avm_address     = cpu_byte_addr;
+assign avm_writedata   = cpu_dout_z;
+assign avm_byteenable  = cpu_be;
+assign avm_valid       = boot_done && cpu_mem_valid && !cpu_mem_bypass;
+assign avm_write       = cpu_mem_write;
 
 // Memory ready signals from cache (not main_memory directly)
 reg mem_rom_wr_ready;
@@ -546,14 +526,14 @@ l1_cache #(
     .cpu_din           (avm_writedata),
     .cpu_dout          (avm_readdata),
     .cpu_be            (avm_byteenable),
-    .cpu_valid         (avm_valid && boot_done),
+    .cpu_valid         (avm_valid),
     .cpu_write         (avm_write),
     .cpu_ready         (avm_ready),
     .cpu_resp_valid    (avm_readdatavalid),
 
     .lookup_addr       (cpu_cache_lookup_addr),
     .lookup            (cpu_cache_lookup && boot_done && !cpu_cache_lookup_bypass),
-    .lookup_cancel     (cpu_cache_lookup_cancel && boot_done),
+    .lookup_cancel     ((cpu_cache_lookup_cancel || cpu_mem_bypass) && boot_done),
     .lookup_ready      (cpu_cache_lookup_ready_raw),
 
     .mem_addr          (cache_mm_addr),
@@ -572,13 +552,14 @@ l1_cache #(
     .cache_enable      (boot_done)
 );
 
-// Mux: during boot, AVM goes directly to main_memory; after boot, through cache
-assign mm_addr       = boot_done ? cache_mm_addr       : avm_address;
-assign mm_din        = boot_done ? cache_mm_din         : avm_writedata;
-assign mm_be         = boot_done ? cache_mm_be          : avm_byteenable;
+// Mux: during boot, the SD boot writer goes directly to main_memory; after
+// boot, CPU memory traffic reaches main_memory through the cache.
+assign mm_addr       = boot_done ? cache_mm_addr       : sd_avm_address;
+assign mm_din        = boot_done ? cache_mm_din         : sd_avm_writedata;
+assign mm_be         = boot_done ? cache_mm_be          : sd_avm_byteenable;
 assign mm_burstcount = boot_done ? cache_mm_burstcount  : 8'd1;
-assign mm_valid      = boot_done ? cache_mm_valid       : avm_valid;
-assign mm_write      = boot_done ? cache_mm_write       : avm_write;
+assign mm_valid      = boot_done ? cache_mm_valid       : sd_avm_write;
+assign mm_write      = boot_done ? cache_mm_write       : 1'b1;
 // Ready/resp_valid go back to either cache or AVM directly
 assign cache_mm_ready      = boot_done ? mm_ready      : 1'b0;
 assign cache_mm_resp_valid = boot_done ? mm_resp_valid  : 1'b0;
@@ -1050,8 +1031,6 @@ wire ps2_kbdat_out;
 // Internal PS/2 wires from mouse device to controller
 wire mouse_ps2_clk;
 wire mouse_ps2_dat;
-wire ps2_mouseclk_out;
-wire ps2_mousedat_out;
 wire ps2_reset_n;
 assign software_reset = ~ps2_reset_n;  // active-high reset from keyboard controller 0xFE command
 
@@ -1446,6 +1425,7 @@ z386_ps2_device ps2_kbd (
 // wire [8:0] mouse_host_cmd;
 // rd comes from top-level uart2ps2
 // reg        mouse_host_cmd_rd;
+`ifdef VERILATOR
 z386_ps2_device ps2_mouse (
     .clk_sys      (clk_sys),
     .reset        (rst[12]),
@@ -1460,6 +1440,11 @@ z386_ps2_device ps2_mouse (
     .rdata        (mouse_host_cmd),
     .rd           (mouse_host_cmd_clear)
 );
+`else
+assign mouse_ps2_clk = ps2_mouseclk_in;
+assign mouse_ps2_dat = ps2_mousedat_in;
+assign mouse_host_cmd = 9'd0;
+`endif
 
 assign sd_clk       = 1'b0;
 assign sd_cmd       = 1'bz;
