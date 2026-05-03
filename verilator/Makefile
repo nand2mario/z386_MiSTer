@@ -2,7 +2,7 @@ VERILATOR = verilator
 VERILATOR_BUILD_JOBS ?= 8
 SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
-VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -DZ386_ALTERA_ALU=1
+VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
 VERILATOR_INCLUDE = -I../src -I../../17.z386
 
 D=../src
@@ -21,7 +21,8 @@ SOURCES = ../z386_mister_sim.sv \
 		  $(D)/common/dpram.v $(D)/common/simple_ram.v $(D)/common/simple_fifo.v $(D)/common/async_fifo.v \
 		  $(D)/common/ps2_device.v $(D)/common/simple_mult.v $(D)/common/uart_tx_V2.v $(D)/common/synchronizer.sv \
 		  $(D)/common/cdc_vector_handshake_continuous.sv \
-		  $(D)/soc/sound/sound.v $(D)/soc/sound/sound_dsp.v $(D)/soc/sound/opl3/afifo.v $(D)/soc/sound/opl3/opl3_pkg.sv \
+		  $(D)/soc/sound/sound.v $(D)/soc/sound/sound_dsp.v $(D)/soc/sound/saa1099.sv \
+		  $(D)/soc/sound/opl3/afifo.v $(D)/soc/sound/opl3/opl3_pkg.sv \
 		  $(D)/soc/sound/opl3/phase_generator.sv $(D)/soc/sound/opl3/mem_simple_dual_port.sv $(D)/soc/sound/opl3/calc_envelope_shift.sv \
 		  $(D)/soc/sound/opl3/operator.sv $(D)/soc/sound/opl3/calc_phase_inc.sv $(D)/soc/sound/opl3/opl3_exp_lut.sv \
 		  $(D)/soc/sound/opl3/calc_rhythm_phase.sv $(D)/soc/sound/opl3/opl3_log_sine_lut.sv $(D)/soc/sound/opl3/channels.sv \

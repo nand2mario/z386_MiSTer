@@ -41,7 +41,7 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 /* altera message_off 10230 */
 
@@ -215,7 +215,6 @@ module envelope_generator
             DECAY: requested_rate_p0 = dr;
             SUSTAIN: requested_rate_p0 = !egt ? rr : 0;
             RELEASE: requested_rate_p0 = rr;
-            default: requested_rate_p0 = 0;
             endcase
     end
 

@@ -39,7 +39,7 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 /* altera message_off 10230 */
 

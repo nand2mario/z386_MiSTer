@@ -38,25 +38,24 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 /* altera message_off 10230 */
 
 module timer
     import opl3_pkg::*;
 #(
-    parameter real TIMER_TICK_INTERVAL = 0, // time in seconds
-    parameter CLK_FREQ = opl3_pkg::CLK_FREQ
+    parameter real TIMER_TICK_INTERVAL = 0 // time in seconds
 ) (
     input wire clk,
     input wire [REG_TIMER_WIDTH-1:0] timer_reg,
     input wire start_timer,
-    output logic timer_overflow_pulse /*= 0*/
+    output logic timer_overflow_pulse = 0
 );
-    localparam int TICK_TIMER_COUNT_VALUE = int'(CLK_FREQ*TIMER_TICK_INTERVAL);
+    localparam int TICK_TIMER_COUNT_VALUE = CLK_FREQ*TIMER_TICK_INTERVAL;
 
     logic [$clog2(TICK_TIMER_COUNT_VALUE)-1:0] tick_counter = 0;
-    logic tick_pulse /*= 0*/;
+    logic tick_pulse = 0;
     logic [REG_TIMER_WIDTH-1:0] timer = 0;
     logic start_timer_set_pulse;
 

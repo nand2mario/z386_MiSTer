@@ -38,14 +38,12 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 
 module timers
     import opl3_pkg::*;
-#(
-    parameter CLK_FREQ = opl3_pkg::CLK_FREQ
-)(
+(
     input wire clk,
     input wire reset,
     input var opl3_reg_wr_t opl3_reg_wr,
@@ -95,8 +93,7 @@ module timers
     end
 
     timer #(
-        .TIMER_TICK_INTERVAL(TIMER1_TICK_INTERVAL),
-        .CLK_FREQ(CLK_FREQ)
+        .TIMER_TICK_INTERVAL(TIMER1_TICK_INTERVAL)
     ) timer1_inst (
         .clk,
         .timer_reg(timer1),
@@ -105,8 +102,7 @@ module timers
     );
 
     timer #(
-        .TIMER_TICK_INTERVAL(TIMER2_TICK_INTERVAL),
-        .CLK_FREQ(CLK_FREQ)
+        .TIMER_TICK_INTERVAL(TIMER2_TICK_INTERVAL)
     ) timer2_inst (
         .clk,
         .timer_reg(timer2),

@@ -40,7 +40,7 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 /* altera message_off 10230 */
 /* altera message_off 10958 */
@@ -56,13 +56,12 @@ module control_operators
     input wire is_new,
     input wire ryt,
     output operator_out_t operator_out,
-    output logic ops_done_pulse /*= 0*/
+    output logic ops_done_pulse = 0
 );
     localparam PIPELINE_DELAY = 6;
     localparam MODULATION_DELAY = 1; // output of operator 0 must be ready by cycle 2 of operator 3 so it can modulate it
     localparam NUM_OPERATOR_UPDATE_STATES = NUM_BANKS*NUM_OPERATORS_PER_BANK + 1; // 36 operators + idle state
-    logic [0:0] delay_counter = 0;
-    // logic [$clog2(MODULATION_DELAY)-1:0] delay_counter = 0;
+    logic [$clog2(MODULATION_DELAY)-1:0] delay_counter = 0;
 
     logic [$clog2(NUM_OPERATOR_UPDATE_STATES)-1:0] state = 0;
     logic [$clog2(NUM_OPERATOR_UPDATE_STATES)-1:0] next_state;
@@ -73,7 +72,7 @@ module control_operators
     logic [OP_NUM_WIDTH-1:0] op_num_p1 = 0;
 
     logic use_feedback_p1 = 0;
-    logic signed [OP_OUT_WIDTH-1:0] modulation_p1 /*= 0*/;
+    logic signed [OP_OUT_WIDTH-1:0] modulation_p1 = 0;
     logic signed [OP_OUT_WIDTH-1:0] out_p6;
     logic signed [OP_OUT_WIDTH-1:0] modulation_out_p1;
 
@@ -293,10 +292,6 @@ module control_operators
             kon_block_fnum_channel_mem_rd_address = 8;
             fb_cnt0_channel_mem_rd_address = 8;
         end
-        default: begin
-            kon_block_fnum_channel_mem_rd_address = 0;
-            fb_cnt0_channel_mem_rd_address = 0;
-        end
         endcase
     end
 
@@ -470,7 +465,6 @@ module control_operators
                 endcase
             else                  modulation_p1 = cnt0_p1 ? 0 : modulation_out_p1;
         16, 17:                   modulation_p1 = cnt0_p1 || (ryt_p1 && bank_num_p1 == 0) ? 0 : modulation_out_p1; // snare drum and top cymbal do not use modulation
-        default:                  modulation_p1 = 0;
         endcase
 
     always_ff @(posedge clk)
@@ -549,10 +543,9 @@ module control_operators
     always_ff @(posedge clk)
         modulation_out_p1 <= out_p6;
 
-// nand2mario: what is this?
-//    ERROR_operators_not_aligned_for_modulation:
-//    assert property (@(posedge clk)
-//        op_sample_clk_en && op_num == 3 |-> operator_out.valid && operator_out.op_num == 0);
+    ERROR_operators_not_aligned_for_modulation:
+    assert property (@(posedge clk)
+        op_sample_clk_en && op_num == 3 |-> operator_out.valid && operator_out.op_num == 0);
 
     always_comb begin
         operator_out.valid = op_sample_clk_en_p[6];

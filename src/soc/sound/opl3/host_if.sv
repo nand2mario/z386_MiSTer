@@ -38,7 +38,7 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 
 module host_if
@@ -53,7 +53,7 @@ module host_if
     input wire wr_n,
     input wire [1:0] address,
     input wire [REG_FILE_DATA_WIDTH-1:0] din,
-    output logic [REG_FILE_DATA_WIDTH-1:0] dout,
+    output logic [REG_FILE_DATA_WIDTH-1:0] dout = 0,
     output opl3_reg_wr_t opl3_reg_wr = 0,
     input wire [REG_FILE_DATA_WIDTH-1:0] status,
     output logic force_timer_overflow

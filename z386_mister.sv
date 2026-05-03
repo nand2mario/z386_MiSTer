@@ -108,12 +108,30 @@ localparam CONF_STR = {
 	"Z386;UART115200;",
 	"S0,IMGIMAVFD,Floppy A:;",
 	"S1,IMGIMAVFD,Floppy B:;",
+	"O12,Write Protect,None,A:,B:,A: & B:;",
 	"-;",
 	"S2,VHD,IDE 0-0;",
 	"S3,VHD,IDE 0-1;",
 	"-;",
 	"S4,VHDISOCUECHD,IDE 1-0;",
 	"S5,VHDISOCUECHD,IDE 1-1;",
+	"-;",
+	"P1,Audio & Video;",
+	"P1-;",
+	"P1O3,FM mode,OPL2,OPL3;",
+	"P1OH,C/MS,Disable,Enable;",
+	"P1OIJ,PC Speaker Volume,1,2,3,4;",
+	"P1OKL,Audio Boost,No,2x,4x;",
+	"P1oBC,Stereo Mix,none,25%,50%,100%;",
+	"P1oO,SB Swap L/R,Off,On;",
+	"-;",
+	"P2,Hardware;",
+	"P2o01,Boot 1st,Floppy/Hard Disk,Floppy,Hard Disk,CD-ROM;",
+	"P2o23,Boot 2nd,NONE,Floppy,Hard Disk,CD-ROM;",
+	"P2o45,Boot 3rd,NONE,Floppy,Hard Disk,CD-ROM;",
+	"P2-;",
+	"P2o6,IDE 1-0 CD Hot-Swap,Yes,No;",
+	"P2o7,IDE 1-1 CD Hot-Swap,No,Yes;",
 	"-;",
 	"R0,Reset and apply HDD;"
 };
@@ -166,14 +184,19 @@ wire        core_bios_loaded;
 wire        core_first_instruction;
 wire  [7:0] core_dbg_uart_byte;
 wire        core_dbg_uart_we;
+wire  [8:0] sample_cms_l;
+wire  [8:0] sample_cms_r;
 wire [15:0] sample_sb_l;
 wire [15:0] sample_sb_r;
 wire [15:0] sample_opl_l;
 wire [15:0] sample_opl_r;
 wire        speaker_out;
 wire        speaker_out_audio;
-wire  [4:0] vol_l;
-wire  [4:0] vol_r;
+wire        sbp;
+wire  [4:0] vol_master_l;
+wire  [4:0] vol_master_r;
+wire  [4:0] vol_voice_l;
+wire  [4:0] vol_voice_r;
 wire  [4:0] vol_cd_l;
 wire  [4:0] vol_cd_r;
 wire  [4:0] vol_midi_l;
@@ -182,9 +205,11 @@ wire  [4:0] vol_line_l;
 wire  [4:0] vol_line_r;
 wire  [1:0] vol_spk;
 wire  [4:0] vol_en;
-reg  [16:0] spk_mix;
-reg  [16:0] audio_tmp_l;
-reg  [16:0] audio_tmp_r;
+reg  [16:0] spk_out;
+reg  [16:0] mix_tmp_l;
+reg  [16:0] mix_tmp_r;
+reg  [15:0] mix_dry_l;
+reg  [15:0] mix_dry_r;
 reg  [15:0] core_audio_l_r;
 reg  [15:0] core_audio_r_r;
 wire        dummy_sd_clk;
@@ -432,7 +457,7 @@ system #(
 	.fdd_request         (mgmt_req[7:6]),
 	.ide0_request        (mgmt_req[2:0]),
 	.ide1_request        (mgmt_req[5:3]),
-	.floppy_wp           (2'b00),
+	.floppy_wp           (status[2:1]),
 
 	.mgmt_address        (mgmt_addr),
 	.mgmt_read           (mgmt_rd),
@@ -524,7 +549,7 @@ system #(
 	.dbg_avm_resp_valid  (),
 	.dbg_cpu_din_z       (),
 
-	.bootcfg             ({4'd0, status[2:1]}),
+	.bootcfg             (status[37:32]),
 	.uma_ram             (1'b0),
 	.syscfg              (),
 
@@ -537,15 +562,20 @@ system #(
 	.video_b             (core_b),
 
 	.clk_audio           (CLK_AUDIO),
+	.sample_cms_l        (sample_cms_l),
+	.sample_cms_r        (sample_cms_r),
 	.sample_sb_l         (sample_sb_l),
 	.sample_sb_r         (sample_sb_r),
 	.sample_opl_l        (sample_opl_l),
 	.sample_opl_r        (sample_opl_r),
-	.sound_fm_mode       (1'b1),
-	.sound_cms_en        (1'b0),
+	.sound_fm_mode       (status[3]),
+	.sound_cms_en        (status[17]),
 	.speaker_out         (speaker_out),
-	.vol_l               (vol_l),
-	.vol_r               (vol_r),
+	.sbp                 (sbp),
+	.vol_master_l        (vol_master_l),
+	.vol_master_r        (vol_master_r),
+	.vol_voice_l         (vol_voice_l),
+	.vol_voice_r         (vol_voice_r),
 	.vol_cd_l            (vol_cd_l),
 	.vol_cd_r            (vol_cd_r),
 	.vol_midi_l          (vol_midi_l),
@@ -578,11 +608,61 @@ synchronizer speaker_out_sync (
 );
 
 always @(posedge CLK_AUDIO) begin
-	spk_mix <= speaker_out_audio ? 17'sh0400 : 17'sh0000;
-	audio_tmp_l <= {sample_opl_l[15], sample_opl_l} + {sample_sb_l[15], sample_sb_l} + spk_mix;
-	audio_tmp_r <= {sample_opl_r[15], sample_opl_r} + {sample_sb_r[15], sample_sb_r} + spk_mix;
-	core_audio_l_r <= (^audio_tmp_l[16:15]) ? {audio_tmp_l[16], {15{audio_tmp_l[15]}}} : audio_tmp_l[15:0];
-	core_audio_r_r <= (^audio_tmp_r[16:15]) ? {audio_tmp_r[16], {15{audio_tmp_r[15]}}} : audio_tmp_r[15:0];
+	reg [16:0] spk;
+	spk <= {2'b00, {3'b000, speaker_out_audio} << status[19:18], 11'd0};
+	spk_out <= spk >> ~vol_spk;
+end
+
+wire [15:0] master_l;
+wire [15:0] master_r;
+wire [15:0] sb_l;
+wire [15:0] sb_r;
+wire [15:0] opl_l;
+wire [15:0] opl_r;
+wire        sb_volume_valid;
+wire [15:0] mix_cmp_l;
+wire [15:0] mix_cmp_r;
+wire [15:0] mix_pre_l = status[21:20] ? mix_cmp_l : mix_dry_l;
+wire [15:0] mix_pre_r = status[21:20] ? mix_cmp_r : mix_dry_r;
+
+acompr acompr_l(CLK_AUDIO, status[21], mix_dry_l, mix_cmp_l);
+acompr acompr_r(CLK_AUDIO, status[21], mix_dry_r, mix_cmp_r);
+
+sb_volume #(.NUM_CH(6), .SAMPLE_WIDTH(16)) sb_volume_inst (
+	.clk(CLK_AUDIO),
+	.sbp(sbp),
+	.volumes_in({vol_master_l, vol_master_r,
+	             vol_voice_l,  vol_voice_r,
+	             vol_midi_l,   vol_midi_r}),
+	.samples_in({mix_pre_l,    mix_pre_r,
+	             sample_sb_l,  sample_sb_r,
+	             sample_opl_l, sample_opl_r}),
+	.samples_out({master_l, master_r,
+	              sb_l,     sb_r,
+	              opl_l,    opl_r}),
+	.valid(sb_volume_valid)
+);
+
+wire [15:0] sb_l_swap = status[56] ? sb_r : sb_l;
+wire [15:0] sb_r_swap = status[56] ? sb_l : sb_r;
+
+always @(posedge CLK_AUDIO) begin
+	if (sb_volume_valid) begin
+		core_audio_l_r <= master_l;
+		core_audio_r_r <= master_r;
+
+		mix_tmp_l <= spk_out
+		           + {2'b00, sample_cms_l, sample_cms_l[8:4]}
+		           + {sb_l_swap[15], sb_l_swap}
+		           + {opl_l[15], opl_l};
+		mix_tmp_r <= spk_out
+		           + {2'b00, sample_cms_r, sample_cms_r[8:4]}
+		           + {sb_r_swap[15], sb_r_swap}
+		           + {opl_r[15], opl_r};
+	end
+
+	mix_dry_l <= (^mix_tmp_l[16:15]) ? {mix_tmp_l[16], {15{mix_tmp_l[15]}}} : mix_tmp_l[15:0];
+	mix_dry_r <= (^mix_tmp_r[16:15]) ? {mix_tmp_r[16], {15{mix_tmp_r[15]}}} : mix_tmp_r[15:0];
 end
 
 assign core_audio_l = core_audio_l_r;
@@ -737,7 +817,7 @@ assign BUTTONS       = {core_soft_reset_req, 1'b0};
 assign AUDIO_L       = core_audio_l;
 assign AUDIO_R       = core_audio_r;
 assign AUDIO_S       = 1'b1;
-assign AUDIO_MIX     = 2'b00;
+assign AUDIO_MIX     = status[44:43];
 
 assign ADC_BUS       = 4'bzzzz;
 
@@ -752,5 +832,42 @@ assign UART_RTS      = 1'b0;
 assign UART_TXD      = debug_uart_tx;
 assign UART_DTR      = 1'b0;
 assign USER_OUT      = 7'h7F;
+
+endmodule
+
+module acompr
+(
+	input             clk,
+	input             mode,
+	input      [15:0] inp,
+	output reg [15:0] out
+);
+
+localparam [3:0] comp_f1 = 4;
+localparam [3:0] comp_a1 = 2;
+localparam       comp_x1 = ((32767 * (comp_f1 - 1)) / ((comp_f1 * comp_a1) - 1)) + 1;
+localparam       comp_b1 = comp_x1 * comp_a1;
+
+localparam [3:0] comp_f2 = 8;
+localparam [3:0] comp_a2 = 4;
+localparam       comp_x2 = ((32767 * (comp_f2 - 1)) / ((comp_f2 * comp_a2) - 1)) + 1;
+localparam       comp_b2 = comp_x2 * comp_a2;
+
+always @(posedge clk) begin
+	reg [15:0] v, v1, v2, v3;
+	reg vs, vs1, vs3;
+
+	v   <= inp[15] ? -inp : inp;
+	vs  <= inp[15];
+
+	v1  <= (v < comp_x1[15:0]) ? (v * comp_a1) : (((v - comp_x1[15:0])/comp_f1) + comp_b1[15:0]);
+	v2  <= (v < comp_x2[15:0]) ? (v * comp_a2) : (((v - comp_x2[15:0])/comp_f2) + comp_b2[15:0]);
+	vs1 <= vs;
+
+	v3  <= mode ? v2 : v1;
+	vs3 <= vs1;
+
+	out <= vs3 ? -v3 : v3;
+end
 
 endmodule

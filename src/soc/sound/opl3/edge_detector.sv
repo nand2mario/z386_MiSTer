@@ -44,7 +44,7 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 /* altera message_off 10230 */
 
@@ -56,7 +56,7 @@ module edge_detector #(
     input wire clk,
     input wire clk_en,
     input wire in,
-    output logic edge_detected /*= 0*/
+    output logic edge_detected = 0
 );
     logic in_r0 = INITIAL_INPUT_LEVEL;
     logic in_r1 = INITIAL_INPUT_LEVEL;

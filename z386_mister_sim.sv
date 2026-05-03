@@ -100,10 +100,15 @@ reg         pending_mouse_arg_r;
 
 wire [15:0] sample_opl_l;
 wire [15:0] sample_opl_r;
+wire  [8:0] sample_cms_l;
+wire  [8:0] sample_cms_r;
 wire        speaker_out;
 wire        speaker_out_audio;
-wire  [4:0] vol_l;
-wire  [4:0] vol_r;
+wire        sbp;
+wire  [4:0] vol_master_l;
+wire  [4:0] vol_master_r;
+wire  [4:0] vol_voice_l;
+wire  [4:0] vol_voice_r;
 wire  [4:0] vol_cd_l;
 wire  [4:0] vol_cd_r;
 wire  [4:0] vol_midi_l;
@@ -410,6 +415,8 @@ system #(
 	.video_b             (video_b_w),
 
 	.clk_audio           (clk_audio),
+	.sample_cms_l        (sample_cms_l),
+	.sample_cms_r        (sample_cms_r),
 	.sample_sb_l         (sample_sb_l),
 	.sample_sb_r         (sample_sb_r),
 	.sample_opl_l        (sample_opl_l),
@@ -417,8 +424,11 @@ system #(
 	.sound_fm_mode       (1'b1),
 	.sound_cms_en        (1'b0),
 	.speaker_out         (speaker_out),
-	.vol_l               (vol_l),
-	.vol_r               (vol_r),
+	.sbp                 (sbp),
+	.vol_master_l        (vol_master_l),
+	.vol_master_r        (vol_master_r),
+	.vol_voice_l         (vol_voice_l),
+	.vol_voice_r         (vol_voice_r),
 	.vol_cd_l            (vol_cd_l),
 	.vol_cd_r            (vol_cd_r),
 	.vol_midi_l          (vol_midi_l),
@@ -444,9 +454,11 @@ system #(
 	.cpu_cs_base         (dbg_cs_base)
 );
 
-reg [16:0] spk_mix;
-reg [16:0] tmp_l;
-reg [16:0] tmp_r;
+reg [16:0] spk_out;
+reg [16:0] mix_tmp_l;
+reg [16:0] mix_tmp_r;
+reg [15:0] mix_dry_l;
+reg [15:0] mix_dry_r;
 reg [15:0] audio_l_r;
 reg [15:0] audio_r_r;
 
@@ -457,11 +469,51 @@ synchronizer speaker_out_sync (
 );
 
 always @(posedge clk_audio) begin
-	spk_mix <= speaker_out_audio ? 17'sh0400 : 17'sh0000;
-	tmp_l <= {sample_opl_l[15], sample_opl_l} + {sample_sb_l[15], sample_sb_l} + spk_mix;
-	tmp_r <= {sample_opl_r[15], sample_opl_r} + {sample_sb_r[15], sample_sb_r} + spk_mix;
-	audio_l_r <= (^tmp_l[16:15]) ? {tmp_l[16], {15{tmp_l[15]}}} : tmp_l[15:0];
-	audio_r_r <= (^tmp_r[16:15]) ? {tmp_r[16], {15{tmp_r[15]}}} : tmp_r[15:0];
+	reg [16:0] spk;
+	spk <= {2'b00, {3'b000, speaker_out_audio}, 11'd0};
+	spk_out <= spk >> ~vol_spk;
+end
+
+wire [15:0] master_l;
+wire [15:0] master_r;
+wire [15:0] sb_l;
+wire [15:0] sb_r;
+wire [15:0] opl_l;
+wire [15:0] opl_r;
+wire        sb_volume_valid;
+
+sb_volume #(.NUM_CH(6), .SAMPLE_WIDTH(16)) sb_volume_inst (
+	.clk(clk_audio),
+	.sbp(sbp),
+	.volumes_in({vol_master_l, vol_master_r,
+	             vol_voice_l,  vol_voice_r,
+	             vol_midi_l,   vol_midi_r}),
+	.samples_in({mix_dry_l,    mix_dry_r,
+	             sample_sb_l,  sample_sb_r,
+	             sample_opl_l, sample_opl_r}),
+	.samples_out({master_l, master_r,
+	              sb_l,     sb_r,
+	              opl_l,    opl_r}),
+	.valid(sb_volume_valid)
+);
+
+always @(posedge clk_audio) begin
+	if (sb_volume_valid) begin
+		audio_l_r <= master_l;
+		audio_r_r <= master_r;
+
+		mix_tmp_l <= spk_out
+		           + {2'b00, sample_cms_l, sample_cms_l[8:4]}
+		           + {sb_l[15], sb_l}
+		           + {opl_l[15], opl_l};
+		mix_tmp_r <= spk_out
+		           + {2'b00, sample_cms_r, sample_cms_r[8:4]}
+		           + {sb_r[15], sb_r}
+		           + {opl_r[15], opl_r};
+	end
+
+	mix_dry_l <= (^mix_tmp_l[16:15]) ? {mix_tmp_l[16], {15{mix_tmp_l[15]}}} : mix_tmp_l[15:0];
+	mix_dry_r <= (^mix_tmp_r[16:15]) ? {mix_tmp_r[16], {15{mix_tmp_r[15]}}} : mix_tmp_r[15:0];
 end
 
 assign audio_l = audio_l_r;

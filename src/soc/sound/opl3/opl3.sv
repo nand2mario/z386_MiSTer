@@ -38,14 +38,12 @@
 #   Copyright (C) 2010-2013 by carbon14 and opl3
 #
 #******************************************************************************/
-// `timescale 1ns / 1ps
+`timescale 1ns / 1ps
 `default_nettype none
 
 module opl3
     import opl3_pkg::*;
-#(
-    parameter OPL3_CLK_FREQ = opl3_pkg::CLK_FREQ
-)(
+(
     input wire clk, // opl3 clk
     input wire clk_host,
     input wire clk_dac, // only used if INSTANTIATE_SAMPLE_SYNC_TO_DAC_CLK is set
@@ -59,12 +57,9 @@ module opl3
     output logic sample_valid,
     output logic signed [DAC_OUTPUT_WIDTH-1:0] sample_l,
     output logic signed [DAC_OUTPUT_WIDTH-1:0] sample_r,
-    // output logic [NUM_LEDS-1:0] led,
+    output logic [NUM_LEDS-1:0] led,
     output logic irq_n
 );
-    // Derive sample clock divider and timer tick from CLK_FREQ parameter
-    localparam int OPL3_CLK_DIV = OPL3_CLK_FREQ / DESIRED_SAMPLE_FREQ;
-
     logic reset;
     logic sample_clk_en;
     opl3_reg_wr_t opl3_reg_wr;
@@ -83,7 +78,7 @@ module opl3
 
     // pulse once per sample period
     clk_div #(
-        .CLK_DIV_COUNT(OPL3_CLK_DIV)
+        .CLK_DIV_COUNT(CLK_DIV_COUNT)
     ) sample_clk_gen (
         .clk_en(sample_clk_en),
         .*
@@ -93,18 +88,16 @@ module opl3
         .*
     );
 
-    // leds leds (
-    //     .*
-    // );
+    leds leds (
+        .*
+    );
 
     /*
      * If we don't need timers, don't instantiate to save area
      */
     generate
     if (INSTANTIATE_TIMERS)
-        timers #(
-            .CLK_FREQ(OPL3_CLK_FREQ)
-        ) timers (
+        timers timers (
             .*
         );
     else

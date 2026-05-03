@@ -41,14 +41,14 @@
 #
 #******************************************************************************/
 package opl3_pkg;
-    localparam CLK_FREQ = 24_576_000; // default; overridden by CLK_FREQ parameter on opl3 module
+    localparam CLK_FREQ = 24.576e6;
     localparam DAC_OUTPUT_WIDTH = 16;
     localparam INSTANTIATE_TIMERS = 1; // set to 1 to use timers, 0 to save area
     localparam NUM_LEDS = 0; // connected to kon bank 0 starting at 0
     localparam INSTANTIATE_SAMPLE_SYNC_TO_DAC_CLK = 0;
 
-    localparam DESIRED_SAMPLE_FREQ = 49_716; // 49.7159e3;
-    localparam int CLK_DIV_COUNT = CLK_FREQ / DESIRED_SAMPLE_FREQ;
+    localparam DESIRED_SAMPLE_FREQ = 49.7159e3;
+    localparam int CLK_DIV_COUNT = 494; // gets us to 49.74899KHz sample freq, +0.07% away
     localparam ACTUAL_SAMPLE_FREQ = CLK_FREQ/CLK_DIV_COUNT;
 
     localparam NUM_REG_PER_BANK = 'hF6;
