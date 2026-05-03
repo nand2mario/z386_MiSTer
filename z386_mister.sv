@@ -118,6 +118,8 @@ localparam CONF_STR = {
 	"-;",
 	"P1,Audio & Video;",
 	"P1-;",
+	"P1OMN,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1-;",
 	"P1O3,FM mode,OPL2,OPL3;",
 	"P1OH,C/MS,Disable,Enable;",
 	"P1OIJ,PC Speaker Volume,1,2,3,4;",
@@ -218,6 +220,8 @@ wire  [3:0] dummy_sd_dat;
 wire  [8:0] unused_mouse_host_cmd;
 wire [35:0] ext_bus;
 wire [21:0] gamma_bus;
+wire [12:0] arx;
+wire [12:0] ary;
 wire [15:0] status_menumask = 16'd0;
 wire [127:0] status_in = 128'd0;
 wire        status_set = 1'b0;
@@ -776,10 +780,37 @@ gamma_fast gamma
 	.RGB_out            ({gamma_r, gamma_g, gamma_b})
 );
 
+reg  [2:0] ar;
+reg [11:0] arx_i;
+reg [11:0] ary_i;
+always @(posedge clk_sys) begin
+	ar    <= status[23:22];
+	arx_i <= (!ar) ? 12'd4 : (ar - 1'd1);
+	ary_i <= (!ar) ? 12'd3 : 12'd0;
+end
+
+video_freak video_freak
+(
+	.CLK_VIDEO          (clk_sys),
+	.CE_PIXEL           (core_ce_pixel),
+	.VGA_VS             (gamma_vs),
+	.HDMI_WIDTH         (HDMI_WIDTH),
+	.HDMI_HEIGHT        (HDMI_HEIGHT),
+	.VGA_DE             (),
+	.VIDEO_ARX          (arx),
+	.VIDEO_ARY          (ary),
+	.VGA_DE_IN          (gamma_de),
+	.ARX                (arx_i),
+	.ARY                (ary_i),
+	.CROP_SIZE          (12'd0),
+	.CROP_OFF           (5'd0),
+	.SCALE              (3'd0)
+);
+
 assign CLK_VIDEO     = clk_sys;
 assign CE_PIXEL      = core_ce_pixel;
-assign VIDEO_ARX     = 13'd4;
-assign VIDEO_ARY     = 13'd3;
+assign VIDEO_ARX     = arx;
+assign VIDEO_ARY     = ary;
 assign VGA_R         = gamma_r;
 assign VGA_G         = gamma_g;
 assign VGA_B         = gamma_b;
