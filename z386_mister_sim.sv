@@ -1,20 +1,20 @@
+//
+// z386_MiSTer top level for Verilator simulation.
+//
 `timescale 1ns / 1ns
 
-module z386_mister_system_core (
+module z386_mister_sim (
 	input         clk_sys,
 	input         reset,
 	input         clk_audio,
 
 	input  [63:0] status,
-	input  [10:0] ps2_key,
-	input         ps2_mouse_clk_out,
-	input         ps2_mouse_data_out,
-	output        ps2_mouse_clk_in,
-	output        ps2_mouse_data_in,
 	input   [7:0] sim_kbd_data,
 	input         sim_kbd_data_valid,
 	output  [8:0] sim_kbd_host_data,
 	input         sim_kbd_host_data_clear,
+	input   [7:0] sim_mouse_data,
+	input         sim_mouse_data_valid,
 	input         sim_soft_reset,
 
 	input         ioctl_download,
@@ -70,6 +70,7 @@ module z386_mister_system_core (
 	output [31:0] dbg_eip,
 	output [31:0] dbg_cs_base,
 	output        dbg_pe,
+	output        dbg_vm,
 	output  [7:0] dbg_post_code,
 	output  [7:0] dbg_uart_byte,
 	output        dbg_uart_we,
@@ -85,32 +86,15 @@ assign soft_reset_req = software_reset;
 
 wire  [7:0] syscfg;
 
-reg   [7:0] kbd_data;
-reg         kbd_data_valid;
 reg   [7:0] mouse_data;
 reg         mouse_data_valid;
-wire  [8:0] kbd_host_data;
 wire  [8:0] mouse_host_cmd;
-wire        kbd_host_data_clear;
 wire        mouse_host_cmd_clear = mouse_host_cmd[8];
 
-reg         ps2_key_stb_r;
-reg  [23:0] kbd_bytes_r;
-reg   [1:0] kbd_count_r;
-reg  [23:0] kbd_reply_bytes_r;
-reg   [1:0] kbd_reply_count_r;
 reg  [31:0] mouse_reply_bytes_r;
 reg   [2:0] mouse_reply_count_r;
 reg   [7:0] pending_mouse_cmd_r;
 reg         pending_mouse_arg_r;
-
-`ifndef VERILATOR
-reg         kbd_host_data_clear_r;
-reg         kbd_host_seen_r;
-reg   [7:0] pending_kbd_cmd_r;
-reg         pending_kbd_arg_r;
-reg   [1:0] ps2_kbd_scan_set_r;
-`endif
 
 wire [15:0] sample_sb_l;
 wire [15:0] sample_sb_r;
@@ -171,15 +155,64 @@ wire  [7:0] video_b_w;
 wire        dummy_sd_clk;
 wire        dummy_sd_cmd;
 wire  [3:0] dummy_sd_dat;
+wire        sim_ps2_kbd_clk;
+wire        sim_ps2_kbd_dat;
+wire        sim_ps2_kbd_clk_fb;
+wire        sim_ps2_kbd_dat_fb;
+wire        sim_ps2_mouse_clk;
+wire        sim_ps2_mouse_dat;
+wire        sim_ps2_mouse_clk_fb;
+wire        sim_ps2_mouse_dat_fb;
+wire  [8:0] sim_kbd_host_data_w;
+wire  [7:0] mouse_tx_data;
+wire        mouse_tx_valid;
 
-assign sim_kbd_host_data = kbd_host_data;
-`ifdef VERILATOR
-assign kbd_host_data_clear = sim_kbd_host_data_clear;
-`else
-assign kbd_host_data_clear = kbd_host_data_clear_r;
-`endif
+assign sim_kbd_host_data = sim_kbd_host_data_w;
+assign mouse_tx_data = mouse_data_valid ? mouse_data : sim_mouse_data;
+assign mouse_tx_valid = mouse_data_valid | (sim_mouse_data_valid & ~mouse_data_valid);
 
-assign active = debug_first_instruction | debug_post_write | kbd_data_valid;
+assign active = debug_first_instruction | debug_post_write | sim_kbd_data_valid | sim_mouse_data_valid | mouse_data_valid;
+
+logic clk_ps2;
+localparam PS2DIV = 1000;      // ~12.5kHz from 25MHz
+always_ff @(posedge clk_sys) begin
+	integer cnt;
+	cnt <= cnt + 1;
+	if (cnt == PS2DIV) begin
+		clk_ps2 <= ~clk_ps2;
+		cnt <= 0;
+	end
+end
+
+z386_ps2_device ps2_kbd_sim (
+	.clk_sys     (clk_sys),
+	.reset       (reset),
+	.ps2_clk     (clk_ps2),
+	.wdata       (sim_kbd_data),
+	.we          (sim_kbd_data_valid),
+	.ps2_clk_out (sim_ps2_kbd_clk),
+	.ps2_dat_out (sim_ps2_kbd_dat),
+	.tx_empty    (),
+	.ps2_clk_in  (sim_ps2_kbd_clk_fb),
+	.ps2_dat_in  (sim_ps2_kbd_dat_fb),
+	.rdata       (sim_kbd_host_data_w),
+	.rd          (sim_kbd_host_data_clear)
+);
+
+z386_ps2_device ps2_mouse_sim (
+	.clk_sys     (clk_sys),
+	.reset       (reset),
+	.ps2_clk     (clk_ps2),
+	.wdata       (mouse_tx_data),
+	.we          (mouse_tx_valid),
+	.ps2_clk_out (sim_ps2_mouse_clk),
+	.ps2_dat_out (sim_ps2_mouse_dat),
+	.tx_empty    (),
+	.ps2_clk_in  (sim_ps2_mouse_clk_fb),
+	.ps2_dat_in  (sim_ps2_mouse_dat_fb),
+	.rdata       (mouse_host_cmd),
+	.rd          (mouse_host_cmd_clear)
+);
 
 always @(posedge clk_sys) begin
 	if (reset) begin
@@ -196,119 +229,15 @@ always @(posedge clk_sys) begin
 end
 
 always @(posedge clk_sys) begin
-	kbd_data_valid <= 1'b0;
 	mouse_data_valid <= 1'b0;
 
 	if (reset) begin
-		ps2_key_stb_r <= ps2_key[10];
-		kbd_bytes_r <= 24'd0;
-		kbd_count_r <= 2'd0;
-		kbd_reply_bytes_r <= 24'd0;
-		kbd_reply_count_r <= 2'd0;
-		kbd_data <= 8'd0;
 		mouse_reply_bytes_r <= 32'd0;
 		mouse_reply_count_r <= 3'd0;
 		pending_mouse_cmd_r <= 8'd0;
 		pending_mouse_arg_r <= 1'b0;
 		mouse_data <= 8'd0;
-`ifndef VERILATOR
-		kbd_host_data_clear_r <= 1'b0;
-		kbd_host_seen_r <= 1'b0;
-		pending_kbd_cmd_r <= 8'd0;
-		pending_kbd_arg_r <= 1'b0;
-		ps2_kbd_scan_set_r <= 2'd2;
-`endif
 	end else begin
-`ifndef VERILATOR
-		kbd_host_data_clear_r <= 1'b0;
-
-		if (kbd_host_data[8] && !kbd_host_seen_r) begin
-			kbd_host_seen_r <= 1'b1;
-			kbd_host_data_clear_r <= 1'b1;
-
-			if (!pending_kbd_arg_r) begin
-				pending_kbd_cmd_r <= kbd_host_data[7:0];
-				case (kbd_host_data[7:0])
-					8'hFF: begin
-						ps2_kbd_scan_set_r <= 2'd2;
-						kbd_reply_bytes_r <= {8'h00, 8'hAA, 8'hFA};
-						kbd_reply_count_r <= 2'd2;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-					8'hF2: begin
-						kbd_reply_bytes_r <= {8'h83, 8'hAB, 8'hFA};
-						kbd_reply_count_r <= 2'd3;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-					8'hF0,
-					8'hF3,
-					8'hED: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFA};
-						kbd_reply_count_r <= 2'd1;
-						pending_kbd_arg_r <= 1'b1;
-					end
-					8'hF6: begin
-						ps2_kbd_scan_set_r <= 2'd2;
-						kbd_reply_bytes_r <= {16'd0, 8'hFA};
-						kbd_reply_count_r <= 2'd1;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-					8'hF4,
-					8'hF5,
-					8'hFA: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFA};
-						kbd_reply_count_r <= 2'd1;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-					8'hEE: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hEE};
-						kbd_reply_count_r <= 2'd1;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-					default: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFE};
-						kbd_reply_count_r <= 2'd1;
-						pending_kbd_cmd_r <= 8'd0;
-					end
-				endcase
-			end else begin
-				case (pending_kbd_cmd_r)
-					8'hED: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFA};
-						kbd_reply_count_r <= 2'd1;
-					end
-					8'hF0: begin
-						if (kbd_host_data[7:0] <= 8'd3) begin
-							if (kbd_host_data[7:0] == 8'd0) begin
-								kbd_reply_bytes_r <= {8'd0, {6'd0, ps2_kbd_scan_set_r}, 8'hFA};
-								kbd_reply_count_r <= 2'd2;
-							end else begin
-								ps2_kbd_scan_set_r <= kbd_host_data[1:0];
-								kbd_reply_bytes_r <= {16'd0, 8'hFA};
-								kbd_reply_count_r <= 2'd1;
-							end
-						end else begin
-							kbd_reply_bytes_r <= {16'd0, 8'hFE};
-							kbd_reply_count_r <= 2'd1;
-						end
-					end
-					8'hF3: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFA};
-						kbd_reply_count_r <= 2'd1;
-					end
-					default: begin
-						kbd_reply_bytes_r <= {16'd0, 8'hFE};
-						kbd_reply_count_r <= 2'd1;
-					end
-				endcase
-				pending_kbd_cmd_r <= 8'd0;
-				pending_kbd_arg_r <= 1'b0;
-			end
-		end else if (!kbd_host_data[8]) begin
-			kbd_host_seen_r <= 1'b0;
-		end
-`endif
-
 		if (mouse_reply_count_r != 3'd0) begin
 			mouse_data <= mouse_reply_bytes_r[7:0];
 			mouse_data_valid <= 1'b1;
@@ -360,37 +289,6 @@ always @(posedge clk_sys) begin
 						pending_mouse_cmd_r <= 8'd0;
 					end
 				endcase
-			end
-		end
-
-		if (sim_kbd_data_valid) begin
-			kbd_data <= sim_kbd_data;
-			kbd_data_valid <= 1'b1;
-		end else if (kbd_reply_count_r != 2'd0) begin
-			kbd_data <= kbd_reply_bytes_r[7:0];
-			kbd_data_valid <= 1'b1;
-			kbd_reply_bytes_r <= {8'd0, kbd_reply_bytes_r[23:8]};
-			kbd_reply_count_r <= kbd_reply_count_r - 2'd1;
-		end else if (kbd_count_r != 2'd0) begin
-			kbd_data <= kbd_bytes_r[7:0];
-			kbd_data_valid <= 1'b1;
-			kbd_bytes_r <= {8'd0, kbd_bytes_r[23:8]};
-			kbd_count_r <= kbd_count_r - 2'd1;
-		end else if (ps2_key_stb_r != ps2_key[10]) begin
-			ps2_key_stb_r <= ps2_key[10];
-
-			if (ps2_key[8] && ps2_key[9]) begin
-				kbd_bytes_r <= {8'd0, ps2_key[7:0], 8'hE0};
-				kbd_count_r <= 2'd2;
-			end else if (ps2_key[8] && !ps2_key[9]) begin
-				kbd_bytes_r <= {ps2_key[7:0], 8'hF0, 8'hE0};
-				kbd_count_r <= 2'd3;
-			end else if (!ps2_key[8] && ps2_key[9]) begin
-				kbd_bytes_r <= {16'd0, ps2_key[7:0]};
-				kbd_count_r <= 2'd1;
-			end else begin
-				kbd_bytes_r <= {8'd0, ps2_key[7:0], 8'hF0};
-				kbd_count_r <= 2'd2;
 			end
 		end
 	end
@@ -456,19 +354,19 @@ system #(
 	.img_ack             (1'b0),
 	.img_buff_din        (16'd0),
 
-	.kbd_data            (kbd_data),
-	.kbd_data_valid      (kbd_data_valid),
-	.kbd_host_data       (kbd_host_data),
-	.kbd_host_data_clear (kbd_host_data_clear),
+	.ps2_kbclk_in        (sim_ps2_kbd_clk),
+	.ps2_kbdat_in        (sim_ps2_kbd_dat),
+	.ps2_kbclk_out       (sim_ps2_kbd_clk_fb),
+	.ps2_kbdat_out       (sim_ps2_kbd_dat_fb),
 
-	.ps2_mouseclk_in     (ps2_mouse_clk_out),
-	.ps2_mousedat_in     (ps2_mouse_data_out),
-	.ps2_mouseclk_out    (ps2_mouse_clk_in),
-	.ps2_mousedat_out    (ps2_mouse_data_in),
-	.mouse_data          (mouse_data),
-	.mouse_data_valid    (mouse_data_valid),
-	.mouse_host_cmd      (mouse_host_cmd),
-	.mouse_host_cmd_clear(mouse_host_cmd_clear),
+	.ps2_mouseclk_in     (sim_ps2_mouse_clk),
+	.ps2_mousedat_in     (sim_ps2_mouse_dat),
+	.ps2_mouseclk_out    (sim_ps2_mouse_clk_fb),
+	.ps2_mousedat_out    (sim_ps2_mouse_dat_fb),
+	.mouse_data          (8'd0),
+	.mouse_data_valid    (1'b0),
+	.mouse_host_cmd      (),
+	.mouse_host_cmd_clear(1'b0),
 
 	.dbg_uart_byte       (dbg_uart_byte_w),
 	.dbg_uart_we         (dbg_uart_we_w),
@@ -539,6 +437,7 @@ system #(
 	.debug_post_write    (debug_post_write),
 
 	.cpu_pe              (dbg_pe),
+	.cpu_vm              (dbg_vm),
 	.cpu_cs              (dbg_cs),
 	.cpu_eip             (dbg_eip),
 	.cpu_cs_base         (dbg_cs_base)

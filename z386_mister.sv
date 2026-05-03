@@ -166,6 +166,30 @@ wire        core_bios_loaded;
 wire        core_first_instruction;
 wire  [7:0] core_dbg_uart_byte;
 wire        core_dbg_uart_we;
+wire [15:0] sample_sb_l;
+wire [15:0] sample_sb_r;
+wire [15:0] sample_opl_l;
+wire [15:0] sample_opl_r;
+wire        speaker_out;
+wire  [4:0] vol_l;
+wire  [4:0] vol_r;
+wire  [4:0] vol_cd_l;
+wire  [4:0] vol_cd_r;
+wire  [4:0] vol_midi_l;
+wire  [4:0] vol_midi_r;
+wire  [4:0] vol_line_l;
+wire  [4:0] vol_line_r;
+wire  [1:0] vol_spk;
+wire  [4:0] vol_en;
+reg  [16:0] spk_mix;
+reg  [16:0] audio_tmp_l;
+reg  [16:0] audio_tmp_r;
+reg  [15:0] core_audio_l_r;
+reg  [15:0] core_audio_r_r;
+wire        dummy_sd_clk;
+wire        dummy_sd_cmd;
+wire  [3:0] dummy_sd_dat;
+wire  [8:0] unused_mouse_host_cmd;
 wire [35:0] ext_bus;
 wire [21:0] gamma_bus;
 wire [15:0] status_menumask = 16'd0;
@@ -393,73 +417,169 @@ hps_ext hps_ext
     .ext_hotswap       (status[39:38])
 );
 
-z386_mister_system_core #(
-	.CLOCK_RATE_HZ(CLOCK_RATE_HZ)
+system #(
+	.SYS_FREQ(CLOCK_RATE_HZ),
+	.SDRAM_HAS_DQM(1'b0),
+	.SDRAM_FAST_GRADE(1'b1)
 ) core (
-	.clk_sys            (clk_sys),
-	.reset              (reset_sync_r[2]),
-	.clk_audio          (CLK_AUDIO),
-	.status             (status[63:0]),
-	.ps2_key            (ps2_key),
-	.ps2_mouse_clk_out  (ps2_mouse_clk_out),
-	.ps2_mouse_data_out (ps2_mouse_data_out),
-	.ps2_mouse_clk_in   (ps2_mouse_clk_in),
-	.ps2_mouse_data_in  (ps2_mouse_data_in),
-	.sim_kbd_data       (8'd0),
-	.sim_kbd_data_valid (1'b0),
-	.sim_kbd_host_data  (),
-	.sim_kbd_host_data_clear(1'b0),
-	.sim_soft_reset     (1'b0),
-	.ioctl_download     (ioctl_download),
-	.ioctl_index        (ioctl_index),
-	.ioctl_wr           (ioctl_wr),
-	.ioctl_addr         (ioctl_addr),
-	.ioctl_dout         (ioctl_dout),
-	.ioctl_wait         (ioctl_wait),
-	.mgmt_address       (mgmt_addr),
-	.mgmt_read          (mgmt_rd),
-	.mgmt_write         (mgmt_wr),
-	.mgmt_writedata     (mgmt_dout),
-	.mgmt_readdata      (mgmt_din),
-	.fdd_request        (mgmt_req[7:6]),
-	.ide0_request       (mgmt_req[2:0]),
-	.ide1_request       (mgmt_req[5:3]),
-	.sdram_dq           (SDRAM_DQ),
-	.sdram_a            (SDRAM_A),
-	.sdram_ba           (SDRAM_BA),
-	.sdram_dqm          ({SDRAM_DQMH, SDRAM_DQML}),
-	.sdram_nwe          (SDRAM_nWE),
-	.sdram_nras         (SDRAM_nRAS),
-	.sdram_ncas         (SDRAM_nCAS),
-	.sdram_ncs          (SDRAM_nCS),
-	.sdram_cke          (SDRAM_CKE),
+	.clk_sys             (clk_sys),
+	.reset               (reset_sync_r[2]),
+	.hps_apply_reset     (status[0]),
+	.software_reset      (core_soft_reset_req),
+	.clock_rate          (CLOCK_RATE_HZ),
 
-	.ddram_busy         (DDRAM_BUSY),
-	.ddram_burstcnt     (DDRAM_BURSTCNT),
-	.ddram_addr         (DDRAM_ADDR),
-	.ddram_dout         (DDRAM_DOUT),
-	.ddram_dout_ready   (DDRAM_DOUT_READY),
-	.ddram_rd           (DDRAM_RD),
-	.ddram_din          (DDRAM_DIN),
-	.ddram_be           (DDRAM_BE),
-	.ddram_we           (DDRAM_WE),
+	.fdd_request         (mgmt_req[7:6]),
+	.ide0_request        (mgmt_req[2:0]),
+	.ide1_request        (mgmt_req[5:3]),
+	.floppy_wp           (2'b00),
 
-	.ce_pixel           (core_ce_pixel),
-	.video_r            (core_r),
-	.video_g            (core_g),
-	.video_b            (core_b),
-	.video_hs           (core_hs),
-	.video_vs           (core_vs),
-	.video_de           (core_de),
-	.audio_l            (core_audio_l),
-	.audio_r            (core_audio_r),
-	.active             (core_active),
-	.debug_bios_loaded_o(core_bios_loaded),
-	.debug_first_instruction_o(core_first_instruction),
-	.dbg_uart_byte      (core_dbg_uart_byte),
-	.dbg_uart_we        (core_dbg_uart_we),
-	.soft_reset_req     (core_soft_reset_req)
+	.mgmt_address        (mgmt_addr),
+	.mgmt_read           (mgmt_rd),
+	.mgmt_readdata       (mgmt_din),
+	.mgmt_write          (mgmt_wr),
+	.mgmt_writedata      (mgmt_dout),
+
+	.sdram_dq            (SDRAM_DQ),
+	.sdram_a             (SDRAM_A),
+	.sdram_ba            (SDRAM_BA),
+	.sdram_dqm           ({SDRAM_DQMH, SDRAM_DQML}),
+	.sdram_nwe           (SDRAM_nWE),
+	.sdram_nras          (SDRAM_nRAS),
+	.sdram_ncas          (SDRAM_nCAS),
+	.sdram_ncs           (SDRAM_nCS),
+	.sdram_cke           (SDRAM_CKE),
+	.refresh_allowed     (1'b1),
+
+	.ddram_busy          (DDRAM_BUSY),
+	.ddram_burstcnt      (DDRAM_BURSTCNT),
+	.ddram_addr          (DDRAM_ADDR),
+	.ddram_dout          (DDRAM_DOUT),
+	.ddram_dout_ready    (DDRAM_DOUT_READY),
+	.ddram_rd            (DDRAM_RD),
+	.ddram_din           (DDRAM_DIN),
+	.ddram_be            (DDRAM_BE),
+	.ddram_we            (DDRAM_WE),
+
+	.sd_clk              (dummy_sd_clk),
+	.sd_cmd              (dummy_sd_cmd),
+	.sd_dat              (dummy_sd_dat),
+
+	.ioctl_download      (ioctl_download),
+	.ioctl_index         (ioctl_index),
+	.ioctl_wr            (ioctl_wr),
+	.ioctl_addr          (ioctl_addr),
+	.ioctl_dout          (ioctl_dout),
+	.ioctl_wait          (ioctl_wait),
+	.img_mounted         (1'b0),
+	.img_readonly        (1'b0),
+	.img_size            (64'd0),
+	.img_lba             (),
+	.img_blk_cnt         (),
+	.img_rd              (),
+	.img_wr              (),
+	.img_ack             (1'b0),
+	.img_buff_addr       (),
+	.img_buff_din        (16'd0),
+	.img_buff_dout       (),
+	.img_buff_wr         (),
+
+	.ps2_mouseclk_in     (ps2_mouse_clk_out),
+	.ps2_mousedat_in     (ps2_mouse_data_out),
+	.ps2_mouseclk_out    (ps2_mouse_clk_in),
+	.ps2_mousedat_out    (ps2_mouse_data_in),
+	.ps2_kbclk_in        (ps2_kbd_clk_out),
+	.ps2_kbdat_in        (ps2_kbd_data_out),
+	.ps2_kbclk_out       (ps2_kbd_clk_in),
+	.ps2_kbdat_out       (ps2_kbd_data_in),
+	.mouse_data          (8'd0),
+	.mouse_data_valid    (1'b0),
+	.mouse_host_cmd      (unused_mouse_host_cmd),
+	.mouse_host_cmd_clear(1'b0),
+
+	.dbg_uart_byte       (core_dbg_uart_byte),
+	.dbg_uart_we         (core_dbg_uart_we),
+	.dbg_sd_avm_address  (),
+	.dbg_sd_avm_writedata(),
+	.dbg_sd_avm_write    (),
+	.dbg_sd_avm_wait     (),
+	.dbg_sd_avm_accept   (),
+	.dbg_mm_addr         (),
+	.dbg_mm_din          (),
+	.dbg_mm_dout         (),
+	.dbg_mm_valid        (),
+	.dbg_mm_write        (),
+	.dbg_mm_ready        (),
+	.dbg_mm_resp_valid   (),
+	.dbg_mem_address     (),
+	.dbg_mem_din         (),
+	.dbg_mem_dout        (),
+	.dbg_mem_valid       (),
+	.dbg_mem_we          (),
+	.dbg_mem_ready       (),
+	.dbg_mem_resp_valid  (),
+	.dbg_avm_address     (),
+	.dbg_avm_readdata    (),
+	.dbg_avm_ready       (),
+	.dbg_avm_resp_valid  (),
+	.dbg_cpu_din_z       (),
+
+	.bootcfg             ({4'd0, status[2:1]}),
+	.uma_ram             (1'b0),
+	.syscfg              (),
+
+	.video_ce            (core_ce_pixel),
+	.video_blank_n       (core_de),
+	.video_hsync         (core_hs),
+	.video_vsync         (core_vs),
+	.video_r             (core_r),
+	.video_g             (core_g),
+	.video_b             (core_b),
+
+	.clk_audio           (CLK_AUDIO),
+	.sample_sb_l         (sample_sb_l),
+	.sample_sb_r         (sample_sb_r),
+	.sample_opl_l        (sample_opl_l),
+	.sample_opl_r        (sample_opl_r),
+	.sound_fm_mode       (1'b1),
+	.sound_cms_en        (1'b0),
+	.speaker_out         (speaker_out),
+	.vol_l               (vol_l),
+	.vol_r               (vol_r),
+	.vol_cd_l            (vol_cd_l),
+	.vol_cd_r            (vol_cd_r),
+	.vol_midi_l          (vol_midi_l),
+	.vol_midi_r          (vol_midi_r),
+	.vol_line_l          (vol_line_l),
+	.vol_line_r          (vol_line_r),
+	.vol_spk             (vol_spk),
+	.vol_en              (vol_en),
+
+	.debug_boot_stage    (),
+	.debug_sd_error      (),
+	.debug_bios_loaded   (core_bios_loaded),
+	.debug_vga_bios_sig_bad(),
+	.debug_vga_bios_sig_checked(),
+	.debug_first_instruction(core_first_instruction),
+	.debug_post_code     (),
+	.debug_post_write    (),
+
+	.cpu_pe              (),
+	.cpu_vm              (),
+	.cpu_cs              (),
+	.cpu_eip             (),
+	.cpu_cs_base         ()
 );
+
+always @(posedge CLK_AUDIO) begin
+	spk_mix <= speaker_out ? 17'sh0400 : 17'sh0000;
+	audio_tmp_l <= {sample_opl_l[15], sample_opl_l} + {sample_sb_l[15], sample_sb_l} + spk_mix;
+	audio_tmp_r <= {sample_opl_r[15], sample_opl_r} + {sample_sb_r[15], sample_sb_r} + spk_mix;
+	core_audio_l_r <= (^audio_tmp_l[16:15]) ? {audio_tmp_l[16], {15{audio_tmp_l[15]}}} : audio_tmp_l[15:0];
+	core_audio_r_r <= (^audio_tmp_r[16:15]) ? {audio_tmp_r[16], {15{audio_tmp_r[15]}}} : audio_tmp_r[15:0];
+end
+
+assign core_audio_l = core_audio_l_r;
+assign core_audio_r = core_audio_r_r;
 
 always @(*) begin
 	debug_uart_enqueue = 1'b0;

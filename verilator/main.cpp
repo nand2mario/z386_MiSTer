@@ -1,6 +1,6 @@
-#include "Vz386_mister_system_core.h"
-#include "Vz386_mister_system_core__Syms.h"
-#include "Vz386_mister_system_core_z386_mister_system_core.h"
+#include "Vz386_mister_sim.h"
+#include "Vz386_mister_sim__Syms.h"
+#include "Vz386_mister_sim_z386_mister_sim.h"
 #include "verilated.h"
 #include "verilated_fst_c.h"
 #include <SDL.h>
@@ -49,7 +49,7 @@ struct Pixel {
 	uint8_t r;
 };
 
-static Vz386_mister_system_core tb;
+static Vz386_mister_sim tb;
 static VerilatedFstC* trace = nullptr;
 static vluint64_t sim_time = 0;
 static bool posedge = false;
@@ -76,8 +76,11 @@ struct ScheduledPs2Bytes {
 static std::vector<ScheduledPs2Bytes> ps2_events;
 static size_t next_ps2_event = 0;
 static deque<uint8_t> kbd_scancode_queue;
+static deque<uint8_t> mouse_byte_queue;
 static uint64_t last_kbd_byte_time = 0;
+static uint64_t last_mouse_byte_time = 0;
 static uint8_t ps2_kbd_scan_set = 2;
+static uint8_t ps2_mouse_buttons = 0;
 static uint8_t pending_kbd_cmd = 0;
 static bool pending_kbd_arg = false;
 static bool kbd_host_busy = false;
@@ -231,6 +234,23 @@ static void queue_sdl_key(SDL_Keycode key, bool pressed) {
 	queue_ps2_bytes(seq);
 }
 
+static void queue_mouse_packet(int dx, int dy, uint8_t buttons) {
+	bool first = true;
+	while (first || dx != 0 || dy != 0) {
+		first = false;
+		int step_x = std::clamp(dx, -127, 127);
+		int step_y = std::clamp(dy, -127, 127);
+		uint8_t flags = 0x08 | (buttons & 0x07);
+		if (step_x < 0) flags |= 0x10;
+		if (step_y < 0) flags |= 0x20;
+		mouse_byte_queue.push_back(flags);
+		mouse_byte_queue.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_x)));
+		mouse_byte_queue.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_y)));
+		dx -= step_x;
+		dy -= step_y;
+	}
+}
+
 static void handle_kbd_host_cmd(uint8_t cmd) {
 	auto reply = [](uint8_t code) {
 		kbd_scancode_queue.push_back(code);
@@ -303,7 +323,7 @@ static void handle_kbd_host_cmd(uint8_t cmd) {
 }
 
 static std::string current_text_screen() {
-	auto* sys = tb.z386_mister_system_core->system_i;
+	auto* sys = tb.z386_mister_sim->system_i;
 	std::string text;
 	text.reserve(25 * 81);
 	uint16_t start = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_address_start);
@@ -491,7 +511,7 @@ static void configure_x86_management(bool hdd0_present) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_system_core [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
 }
 
 int main(int argc, char** argv) {
@@ -656,7 +676,6 @@ int main(int argc, char** argv) {
 	tb.clk_audio = 0;
 	tb.reset = 1;
 	tb.status = 0;
-	tb.ps2_key = 0;
 	tb.ioctl_download = 0;
 	tb.ioctl_index = 0;
 	tb.ioctl_wr = 0;
@@ -669,7 +688,6 @@ int main(int argc, char** argv) {
 	tb.mgmt_read = 0;
 	tb.mgmt_write = 0;
 	tb.mgmt_writedata = 0;
-	tb.ps2_key = 0;
 
 	if (enable_trace) set_trace(true);
 
@@ -697,19 +715,31 @@ int main(int argc, char** argv) {
 	int sim_soft_reset_cycles = 0;
 	bool gui_r_soft_reset_active = false;
 	bool gui_c_checkpoint_active = false;
+	bool mouse_captured = false;
 	uint8_t last_post = 0;
 	bool have_post = false;
 	bool running = true;
 	uint64_t loop_start_cycle = 0;
 	auto next_checkpoint_at = std::chrono::steady_clock::now() +
 		std::chrono::seconds(checkpoint_interval_sec ? checkpoint_interval_sec : 1);
-	auto* core = tb.z386_mister_system_core;
+	auto* core = tb.z386_mister_sim;
 	auto* sys = core->system_i;
 
 	tb.sim_kbd_data = 0;
 	tb.sim_kbd_data_valid = 0;
 	tb.sim_kbd_host_data_clear = 0;
+	tb.sim_mouse_data = 0;
+	tb.sim_mouse_data_valid = 0;
 	tb.sim_soft_reset = 0;
+
+	auto set_mouse_capture = [&](bool capture) {
+		if (mouse_captured == capture) return;
+		mouse_captured = capture;
+		SDL_CaptureMouse(capture ? SDL_TRUE : SDL_FALSE);
+		SDL_SetRelativeMouseMode(capture ? SDL_TRUE : SDL_FALSE);
+		SDL_ShowCursor(capture ? SDL_DISABLE : SDL_ENABLE);
+		last_title_ms = 0;
+	};
 
 	auto keyboard_send_pre = [&](uint64_t cycle) {
 		tb.sim_kbd_host_data_clear = kbd_host_clear_pending;
@@ -751,6 +781,27 @@ int main(int argc, char** argv) {
 		tb.sim_kbd_data_valid = 0;
 	};
 
+	auto mouse_send_pre = [&](uint64_t cycle) {
+		if (cycle - last_mouse_byte_time > 20000 && !mouse_byte_queue.empty()) {
+			tb.sim_mouse_data = mouse_byte_queue.front();
+			mouse_byte_queue.pop_front();
+			tb.sim_mouse_data_valid = 1;
+			last_mouse_byte_time = cycle;
+		} else {
+			tb.sim_mouse_data_valid = 0;
+		}
+	};
+
+	auto update_mouse_button = [](uint8_t& buttons, uint8_t sdl_button, bool pressed) {
+		uint8_t mask = 0;
+		if (sdl_button == SDL_BUTTON_LEFT) mask = 0x01;
+		else if (sdl_button == SDL_BUTTON_RIGHT) mask = 0x02;
+		else if (sdl_button == SDL_BUTTON_MIDDLE) mask = 0x04;
+		if (mask == 0) return;
+		if (pressed) buttons |= mask;
+		else buttons &= ~mask;
+	};
+
 	auto consume_video = [&](uint64_t cycle) {
 		if (!posedge) return;
 
@@ -789,6 +840,7 @@ int main(int argc, char** argv) {
 			if (frame_x_max >= 640) resolution_x = std::min(frame_x_max, H_RES);
 			if (frame_line_max >= 300) resolution_y = std::min(frame_line_max, V_RES);
 			cout << cycle << ": FRAME: PE=" << static_cast<int>(tb.dbg_pe)
+			     << " VM=" << static_cast<int>(tb.dbg_vm)
 			     << " CS:EIP=" << std::hex << tb.dbg_cs << ":" << tb.dbg_eip
 			     << std::dec << " pix=" << frame_pix_cnt
 			     << " lines=" << frame_line_max
@@ -880,7 +932,7 @@ int main(int argc, char** argv) {
 		{
 			std::ofstream out(tmp_dir / "harness.bin", ios::binary);
 			const uint32_t magic = 0x5A434B50; // ZCKP
-			const uint32_t version = 1;
+			const uint32_t version = 2;
 			write_pod(out, magic);
 			write_pod(out, version);
 			write_pod(out, sim_time);
@@ -892,8 +944,11 @@ int main(int argc, char** argv) {
 			write_scheduled_events(out, ps2_events);
 			write_pod(out, next_ps2_event);
 			write_deque_u8(out, kbd_scancode_queue);
+			write_deque_u8(out, mouse_byte_queue);
 			write_pod(out, last_kbd_byte_time);
+			write_pod(out, last_mouse_byte_time);
 			write_pod(out, ps2_kbd_scan_set);
+			write_pod(out, ps2_mouse_buttons);
 			write_pod(out, pending_kbd_cmd);
 			write_pod(out, pending_kbd_arg);
 			write_pod(out, kbd_host_busy);
@@ -918,6 +973,7 @@ int main(int argc, char** argv) {
 			write_pod(out, bios_dbg_wr_prev);
 			write_pod(out, last_post);
 			write_pod(out, have_post);
+			write_pod(out, mouse_captured);
 			write_pod(out, last_title_sim_time);
 			write_pod(out, resolution_x);
 			write_pod(out, resolution_y);
@@ -963,7 +1019,7 @@ int main(int argc, char** argv) {
 			uint32_t version = 0;
 			read_pod(in, magic);
 			read_pod(in, version);
-			if (magic != 0x5A434B50 || version != 1) {
+			if (magic != 0x5A434B50 || (version != 1 && version != 2)) {
 				throw std::runtime_error("bad simulator checkpoint");
 			}
 			read_pod(in, sim_time);
@@ -975,8 +1031,11 @@ int main(int argc, char** argv) {
 			read_scheduled_events(in, ps2_events);
 			read_pod(in, next_ps2_event);
 			read_deque_u8(in, kbd_scancode_queue);
+			if (version >= 2) read_deque_u8(in, mouse_byte_queue);
 			read_pod(in, last_kbd_byte_time);
+			if (version >= 2) read_pod(in, last_mouse_byte_time);
 			read_pod(in, ps2_kbd_scan_set);
+			if (version >= 2) read_pod(in, ps2_mouse_buttons);
 			read_pod(in, pending_kbd_cmd);
 			read_pod(in, pending_kbd_arg);
 			read_pod(in, kbd_host_busy);
@@ -1002,6 +1061,7 @@ int main(int argc, char** argv) {
 			read_pod(in, bios_dbg_wr_prev);
 			read_pod(in, last_post);
 			read_pod(in, have_post);
+			if (version >= 2) read_pod(in, mouse_captured);
 			read_pod(in, last_title_sim_time);
 			read_pod(in, resolution_x);
 			read_pod(in, resolution_y);
@@ -1014,6 +1074,11 @@ int main(int argc, char** argv) {
 		loop_start_cycle = current_cycle + 1;
 		next_checkpoint_at = std::chrono::steady_clock::now() +
 			std::chrono::seconds(checkpoint_interval_sec ? checkpoint_interval_sec : 1);
+		if (!g_headless) {
+			bool restored_mouse_capture = mouse_captured;
+			mouse_captured = false;
+			set_mouse_capture(restored_mouse_capture);
+		}
 		cout << "restored checkpoint " << dir << " at cycle " << current_cycle << "\n";
 	};
 
@@ -1033,12 +1098,18 @@ int main(int argc, char** argv) {
 		ide0.tick(tb);
 		if (!tb.mgmt_read && !tb.mgmt_write) ide1.tick(tb);
 
-		if (!tb.clk_sys) keyboard_send_pre(cycle);
+		if (!tb.clk_sys) {
+			keyboard_send_pre(cycle);
+			mouse_send_pre(cycle);
+		}
 		step();
 		keyboard_observe_post(cycle);
 		consume_video(cycle);
 
-		if (!tb.clk_sys) keyboard_send_pre(cycle);
+		if (!tb.clk_sys) {
+			keyboard_send_pre(cycle);
+			mouse_send_pre(cycle);
+		}
 		step();
 		keyboard_observe_post(cycle);
 		consume_video(cycle);
@@ -1071,10 +1142,18 @@ int main(int argc, char** argv) {
 			while (SDL_PollEvent(&e)) {
 				if (e.type == SDL_QUIT) running = false;
 				else if (e.type == SDL_WINDOWEVENT &&
-				         e.window.event == SDL_WINDOWEVENT_CLOSE &&
-				         e.window.windowID == SDL_GetWindowID(sdl_window)) running = false;
+				         e.window.windowID == SDL_GetWindowID(sdl_window)) {
+					if (e.window.event == SDL_WINDOWEVENT_CLOSE) {
+						running = false;
+					} else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST && mouse_captured) {
+						set_mouse_capture(false);
+					}
+				}
 				else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
 					SDL_Keymod mods = SDL_GetModState();
+					bool mouse_release_hotkey =
+						mouse_captured &&
+						(e.key.keysym.scancode == SDL_SCANCODE_ESCAPE);
 					bool trace_hotkey =
 						(e.key.keysym.scancode == SDL_SCANCODE_T) &&
 						(mods & (KMOD_GUI | KMOD_CTRL));
@@ -1084,7 +1163,9 @@ int main(int argc, char** argv) {
 					bool checkpoint_hotkey =
 						(e.key.keysym.scancode == SDL_SCANCODE_C) &&
 						(mods & KMOD_GUI);
-					if (trace_hotkey) {
+					if (mouse_release_hotkey) {
+						set_mouse_capture(false);
+					} else if (trace_hotkey) {
 						set_trace(!trace_toggle);
 					} else if (soft_reset_hotkey) {
 						gui_r_soft_reset_active = true;
@@ -1119,6 +1200,18 @@ int main(int argc, char** argv) {
 					} else if (!trace_hotkey) {
 						queue_sdl_key(e.key.keysym.sym, false);
 					}
+				} else if (e.type == SDL_MOUSEBUTTONDOWN &&
+				           e.button.windowID == SDL_GetWindowID(sdl_window)) {
+					if (!mouse_captured) set_mouse_capture(true);
+					update_mouse_button(ps2_mouse_buttons, e.button.button, true);
+					queue_mouse_packet(0, 0, ps2_mouse_buttons);
+				} else if (e.type == SDL_MOUSEBUTTONUP && mouse_captured) {
+					update_mouse_button(ps2_mouse_buttons, e.button.button, false);
+					queue_mouse_packet(0, 0, ps2_mouse_buttons);
+				} else if (e.type == SDL_MOUSEMOTION && mouse_captured) {
+					if (e.motion.xrel || e.motion.yrel) {
+						queue_mouse_packet(e.motion.xrel, -e.motion.yrel, ps2_mouse_buttons);
+					}
 				}
 			}
 
@@ -1133,10 +1226,11 @@ int main(int argc, char** argv) {
 				if (now - last_title_ms >= 1000) {
 					uint64_t delta_cycles = (sim_time - last_title_sim_time) / 2;
 					bool trace_active = trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle;
-					char title[128];
-					snprintf(title, sizeof(title), "z386 MiSTer - %.1f MHz%s",
+					char title[192];
+					snprintf(title, sizeof(title), "z386 MiSTer - %.1f MHz%s%s",
 						delta_cycles / 1000000.0,
-						trace_active ? " [TRACE]" : "");
+						trace_active ? " [TRACE]" : "",
+						mouse_captured ? " [MOUSE CAPTURED - ESC/GUI-ESC to release]" : "");
 					SDL_SetWindowTitle(sdl_window, title);
 					last_title_ms = now;
 					last_title_sim_time = sim_time;
@@ -1195,6 +1289,7 @@ int main(int argc, char** argv) {
 		delete trace;
 		trace = nullptr;
 	}
+	if (!g_headless && mouse_captured) set_mouse_capture(false);
 	if (sdl_texture) SDL_DestroyTexture(sdl_texture);
 	if (sdl_renderer) SDL_DestroyRenderer(sdl_renderer);
 	if (sdl_window) SDL_DestroyWindow(sdl_window);

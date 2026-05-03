@@ -65,16 +65,14 @@ module system (
     output [15:0] img_buff_dout,
     output        img_buff_wr,
 
-	// Keyboard byte stream (for injecting PS/2 scancodes)
-	input   [7:0] kbd_data,
-	input         kbd_data_valid,
-	output  [8:0] kbd_host_data,        // {valid, data}
-	input         kbd_host_data_clear,
-
 	input         ps2_mouseclk_in,
 	input         ps2_mousedat_in,
 	output        ps2_mouseclk_out,
 	output        ps2_mousedat_out,
+	input         ps2_kbclk_in,
+	input         ps2_kbdat_in,
+	output        ps2_kbclk_out,
+	output        ps2_kbdat_out,
 
 	// Mouse byte stream (for injecting PS/2 mouse packets)
 	input   [7:0] mouse_data,
@@ -160,6 +158,7 @@ module system (
 
     // CPU state outputs (for simulation monitoring)
     output            cpu_pe,
+    output            cpu_vm,
     output     [15:0] cpu_cs,
     output     [31:0] cpu_eip,
     output     [31:0] cpu_cs_base
@@ -173,6 +172,7 @@ parameter SDRAM_HAS_DQM = 1'b1;
 parameter SDRAM_FAST_GRADE = 1'b1;
 
 assign cpu_pe      = debug_cpu_pe;
+assign cpu_vm      = debug_cpu_vm;
 assign cpu_cs      = debug_cpu_cs;
 assign cpu_eip     = debug_cpu_eip;
 assign cpu_cs_base = debug_cpu_cs_base;
@@ -242,6 +242,7 @@ wire [31:0] debug_cpu_eip;
 wire [15:0] debug_cpu_cs;
 wire [31:0] debug_cpu_cs_base;
 wire        debug_cpu_pe;
+wire        debug_cpu_vm;
 
 localparam BOOT_IDLE       = 0;
 localparam BOOT_DDR_REQ    = 1;
@@ -432,7 +433,7 @@ z386 z386_cpu (
     .dbg_EIP           (debug_cpu_eip),
     .dbg_CS_base       (debug_cpu_cs_base),
     .dbg_pe            (debug_cpu_pe),
-    .dbg_vm            ()
+    .dbg_vm            (debug_cpu_vm)
 );
 
 // CPU data in mux: INTA > IO > Memory
@@ -1026,8 +1027,6 @@ pit pit
 // Internal PS/2 wires from keyboard device to controller
 wire kbd_ps2_clk;
 wire kbd_ps2_dat;
-wire ps2_kbclk_out;
-wire ps2_kbdat_out;
 // Internal PS/2 wires from mouse device to controller
 wire mouse_ps2_clk;
 wire mouse_ps2_dat;
@@ -1393,58 +1392,18 @@ always @(posedge clk_sys) begin
 end
 
 
-// PS/2 keyboard device: convert incoming bytes to PS/2 wires
-logic clk_ps2;
-localparam PS2DIV = 1000;      // ~12.5kHz from 25MHz
-always_ff @(posedge clk_sys) begin
-    integer cnt;
-    cnt <= cnt + 1;
-    if (cnt == PS2DIV) begin
-        clk_ps2 <= ~clk_ps2;
-        cnt <= 0;
-    end
-end
-
-z386_ps2_device ps2_kbd (
-    .clk_sys      (clk_sys),
-    .reset        (rst[11]),
-    .ps2_clk      (clk_ps2),
-    .wdata        (kbd_data),
-    .we           (kbd_data_valid),
-    .ps2_clk_out  (kbd_ps2_clk),
-    .ps2_dat_out  (kbd_ps2_dat),
-    .tx_empty     (),
-    .ps2_clk_in   (ps2_kbclk_out),   // feedback from controller
-    .ps2_dat_in   (ps2_kbdat_out),
-    .rdata        (kbd_host_data),
-    .rd           (kbd_host_data_clear)
-);
+// Use the external PS/2 wire interface in both hardware and simulation.
+assign kbd_ps2_clk  = ps2_kbclk_in;
+assign kbd_ps2_dat  = ps2_kbdat_in;
 
     // PS/2 mouse device: translate UART-injected mouse bytes to PS/2 lines
 // Also expose host->device bytes via rdata so we can forward them over UART
 // wire [8:0] mouse_host_cmd;
 // rd comes from top-level uart2ps2
 // reg        mouse_host_cmd_rd;
-`ifdef VERILATOR
-z386_ps2_device ps2_mouse (
-    .clk_sys      (clk_sys),
-    .reset        (rst[12]),
-    .ps2_clk      (clk_ps2),
-    .wdata        (mouse_data),
-    .we           (mouse_data_valid),
-    .ps2_clk_out  (mouse_ps2_clk),
-    .ps2_dat_out  (mouse_ps2_dat),
-    .tx_empty     (),
-    .ps2_clk_in   (ps2_mouseclk_out),
-    .ps2_dat_in   (ps2_mousedat_out),
-    .rdata        (mouse_host_cmd),
-    .rd           (mouse_host_cmd_clear)
-);
-`else
 assign mouse_ps2_clk = ps2_mouseclk_in;
 assign mouse_ps2_dat = ps2_mousedat_in;
 assign mouse_host_cmd = 9'd0;
-`endif
 
 assign sd_clk       = 1'b0;
 assign sd_cmd       = 1'bz;

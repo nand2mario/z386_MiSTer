@@ -17,6 +17,6 @@ jtag.cdf
 *.xml
 *.bak
 *_sim*
+!z386_mister_sim.sv
 simulation/
 synthesis/
-

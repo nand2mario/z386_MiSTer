@@ -1,7 +1,5 @@
 set_global_assignment -name SEARCH_PATH src
 
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/z386_mister_system_core.sv
-
 set_global_assignment -name SYSTEMVERILOG_FILE src/system.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/iobus_adapter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/pic_inta_bridge.sv
