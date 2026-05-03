@@ -320,7 +320,6 @@ void HpsIde::put_lba(uint32_t lba) {
         lba >>= 16;
         regs_.head = static_cast<uint8_t>(lba & 0x0F);
     } else {
-        lba--;
         uint32_t hspt = drive_.heads * drive_.spt;
         regs_.cylinder = lba / hspt;
         lba %= hspt;

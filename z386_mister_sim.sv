@@ -53,6 +53,8 @@ module z386_mister_sim (
 	output        video_de,
 	output [15:0] audio_l,
 	output [15:0] audio_r,
+	output [15:0] sample_sb_l,
+	output [15:0] sample_sb_r,
 	output        active,
 	output        debug_bios_loaded_o,
 	output        debug_first_instruction_o,
@@ -96,11 +98,10 @@ reg   [2:0] mouse_reply_count_r;
 reg   [7:0] pending_mouse_cmd_r;
 reg         pending_mouse_arg_r;
 
-wire [15:0] sample_sb_l;
-wire [15:0] sample_sb_r;
 wire [15:0] sample_opl_l;
 wire [15:0] sample_opl_r;
 wire        speaker_out;
+wire        speaker_out_audio;
 wire  [4:0] vol_l;
 wire  [4:0] vol_r;
 wire  [4:0] vol_cd_l;
@@ -449,8 +450,14 @@ reg [16:0] tmp_r;
 reg [15:0] audio_l_r;
 reg [15:0] audio_r_r;
 
+synchronizer speaker_out_sync (
+	.clk(clk_audio),
+	.in(speaker_out),
+	.out(speaker_out_audio)
+);
+
 always @(posedge clk_audio) begin
-	spk_mix <= speaker_out ? 17'sh0400 : 17'sh0000;
+	spk_mix <= speaker_out_audio ? 17'sh0400 : 17'sh0000;
 	tmp_l <= {sample_opl_l[15], sample_opl_l} + {sample_sb_l[15], sample_sb_l} + spk_mix;
 	tmp_r <= {sample_opl_r[15], sample_opl_r} + {sample_sb_r[15], sample_sb_r} + spk_mix;
 	audio_l_r <= (^tmp_l[16:15]) ? {tmp_l[16], {15{tmp_l[15]}}} : tmp_l[15:0];

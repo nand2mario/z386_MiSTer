@@ -171,6 +171,7 @@ wire [15:0] sample_sb_r;
 wire [15:0] sample_opl_l;
 wire [15:0] sample_opl_r;
 wire        speaker_out;
+wire        speaker_out_audio;
 wire  [4:0] vol_l;
 wire  [4:0] vol_r;
 wire  [4:0] vol_cd_l;
@@ -568,10 +569,16 @@ system #(
 	.cpu_cs              (),
 	.cpu_eip             (),
 	.cpu_cs_base         ()
+	);
+
+synchronizer speaker_out_sync (
+	.clk(CLK_AUDIO),
+	.in(speaker_out),
+	.out(speaker_out_audio)
 );
 
 always @(posedge CLK_AUDIO) begin
-	spk_mix <= speaker_out ? 17'sh0400 : 17'sh0000;
+	spk_mix <= speaker_out_audio ? 17'sh0400 : 17'sh0000;
 	audio_tmp_l <= {sample_opl_l[15], sample_opl_l} + {sample_sb_l[15], sample_sb_l} + spk_mix;
 	audio_tmp_r <= {sample_opl_r[15], sample_opl_r} + {sample_sb_r[15], sample_sb_r} + spk_mix;
 	core_audio_l_r <= (^audio_tmp_l[16:15]) ? {audio_tmp_l[16], {15{audio_tmp_l[15]}}} : audio_tmp_l[15:0];

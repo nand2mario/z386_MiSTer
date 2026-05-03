@@ -25,6 +25,7 @@
 #include "verilated_save.h"
 
 #include "ide_hps.h"
+#include "wav_writer.h"
 
 using std::cerr;
 using std::cout;
@@ -89,8 +90,14 @@ static std::vector<uint64_t> screen_check_cycles;
 static size_t next_screen_check = 0;
 static bool g_headless = false;
 static bool g_ide_debug = true;
+static bool record_audio = false;
 static Pixel screenbuffer[H_RES * V_RES]{};
 static Pixel presentbuffer[H_RES * V_RES]{};
+
+static WAVWriter* wav_writer = nullptr;
+static uint32_t audio_sample_accum = 0;
+static constexpr uint32_t AUDIO_SAMPLE_RATE = 48000;
+static constexpr uint32_t AUDIO_CLOCK_HZ = 50000000;
 
 template <typename T>
 static void write_pod(std::ostream& out, const T& value) {
@@ -383,6 +390,14 @@ static void step() {
 	tb.clk_audio = tb.clk_sys;
 	posedge = tb.clk_sys;
 	tb.eval();
+	if (posedge && wav_writer) {
+		audio_sample_accum += AUDIO_SAMPLE_RATE;
+		if (audio_sample_accum >= AUDIO_CLOCK_HZ) {
+			audio_sample_accum -= AUDIO_CLOCK_HZ;
+			wav_writer->write_sample(static_cast<int16_t>(tb.sample_sb_l),
+			                         static_cast<int16_t>(tb.sample_sb_r));
+		}
+	}
 	if (posedge) {
 		bool read_accepted = tb.ddram_rd && !tb.ddram_busy;
 		if (read_accepted) {
@@ -511,7 +526,7 @@ static void configure_x86_management(bool hdd0_present) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
 }
 
 int main(int argc, char** argv) {
@@ -555,6 +570,8 @@ int main(int argc, char** argv) {
 			g_ide_debug = true;
 		} else if (arg == "--no-ide") {
 			g_ide_debug = false;
+		} else if (arg == "--record") {
+			record_audio = true;
 		} else if (arg == "--checkpoint-dir" && i + 1 < argc) {
 			checkpoint_dir = argv[++i];
 		} else if (arg == "--checkpoint-interval-sec" && i + 1 < argc) {
@@ -688,6 +705,11 @@ int main(int argc, char** argv) {
 	tb.mgmt_read = 0;
 	tb.mgmt_write = 0;
 	tb.mgmt_writedata = 0;
+
+	if (record_audio) {
+		wav_writer = new WAVWriter("dsp.wav", AUDIO_SAMPLE_RATE, 2, 16);
+		cout << "Recording DSP output to dsp.wav at " << AUDIO_SAMPLE_RATE << " Hz\n";
+	}
 
 	if (enable_trace) set_trace(true);
 
@@ -1288,6 +1310,10 @@ int main(int argc, char** argv) {
 		trace->close();
 		delete trace;
 		trace = nullptr;
+	}
+	if (wav_writer) {
+		delete wav_writer;
+		wav_writer = nullptr;
 	}
 	if (!g_headless && mouse_captured) set_mouse_capture(false);
 	if (sdl_texture) SDL_DestroyTexture(sdl_texture);
