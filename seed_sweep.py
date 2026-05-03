@@ -259,35 +259,6 @@ def copy_project_for_seed(project_dir: Path, dst: Path) -> None:
     copy_tree(project_dir, dst, ignored)
 
 
-def copy_core_for_seed(repo_root: Path, dst: Path) -> None:
-    ignored = {
-        "__pycache__",
-        ".pytest_cache",
-        "tests",
-        "obj_dir",
-        "build",
-        "dist",
-        ".git",
-        "*.vcd",
-        "*.fst",
-        "*.gch",
-        "*.o",
-        "*.a",
-        "*.so",
-    }
-    copy_tree(repo_root / "17.z386", dst, ignored)
-
-
-def copy_ao486_sys_for_seed(repo_root: Path, dst: Path) -> None:
-    ignored = {
-        "__pycache__",
-        "db",
-        "incremental_db",
-        "output_files",
-    }
-    copy_tree(repo_root / "ao486_MiSTer" / "sys", dst, ignored)
-
-
 def prepare_seed_work_tree(project_dir: Path, seed_dir: Path) -> Path:
     repo_root = project_dir.parent
     work_root = seed_dir / "work"

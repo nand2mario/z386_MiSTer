@@ -3,10 +3,10 @@ VERILATOR_BUILD_JOBS ?= 8
 SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
 VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
-VERILATOR_INCLUDE = -I../src -I../../17.z386
+VERILATOR_INCLUDE = -I../src -I../src/z386
 
 D=../src
-DZ=../../17.z386
+DZ=../src/z386
 
 SOURCES = ../z386_mister_sim.sv \
 		  $(D)/system.sv \
@@ -38,11 +38,8 @@ CPP_SOURCES = main.cpp ide_hps.cpp
 
 all: obj_dir/Vz386_mister_sim
 
-../../17.z386/ucode45.hex: ../../17.z386/ucode.hex ../../17.z386/scripts/gen_ucode45.py
-	../../17.z386/scripts/gen_ucode45.py ../../17.z386/ucode.hex ../../17.z386/ucode45.hex
-
-obj_dir/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../../17.z386/ucode45.hex
-	ln -sf ../../17.z386/ucode45.hex .
+obj_dir/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../src/z386/ucode45.hex
+	ln -sf ../src/z386/ucode45.hex .
 	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_INCLUDE) $(SOURCES) $(CPP_SOURCES)
 
 run: obj_dir/Vz386_mister_sim
