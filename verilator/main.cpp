@@ -38,7 +38,7 @@ using std::string;
 using std::vector;
 namespace fs = std::filesystem;
 
-#include "../../12.386tang/verilator/scancode.h"
+#include "scancode.h"
 
 static constexpr int H_RES = 1600;
 static constexpr int V_RES = 900;
@@ -59,7 +59,7 @@ static bool trace_loop_started = false;
 static uint64_t trace_start_cycle = 0;
 static uint64_t current_cycle = 0;
 
-static string disk_path = "../../sdcard/freedos.img";
+static string disk_path = "freedos.img";
 static string boot0_path = "boot0.rom";
 static string boot1_path = "boot1.rom";
 static std::array<bool, 256> boot_pages_seen{};
