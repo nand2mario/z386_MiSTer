@@ -169,9 +169,6 @@ module system (
     output     [31:0] cpu_cs_base
 );
 
-// Cache size example (<=8): 2^6 = 64 sets → 2KB cache with 16B lines and 2-way associativity
-localparam integer L1_CACHE_SET_BITS = 8;
-
 parameter SYS_FREQ = 50_000_000;
 parameter SDRAM_HAS_DQM = 1'b1;
 parameter SDRAM_FAST_GRADE = 1'b1;
@@ -278,6 +275,7 @@ wire        irq_0, irq_1, irq_2, irq_3, irq_4,
 // z386 CPU bus signals (ready/valid)
 wire [31:2] cpu_addr;
 wire  [3:0] cpu_be;
+wire  [7:0] cpu_burstcount;
 wire [31:0] cpu_din_z;
 wire [31:0] cpu_dout_z;
 wire        cpu_valid, cpu_write;
@@ -349,8 +347,8 @@ wire  [7:0] dma_io_readdata;
 wire  [7:0] pic_readdata;
 wire  [7:0] vga_io_readdata;
 
-// CPU-facing cache request bundle. The boot loader feeds main_memory directly
-// through the mm_* mux below so its address path does not enter the cache.
+// CPU-facing external memory request bundle. z386 owns the L1 internally, so
+// this is the cache-fill/write-through bus, not a SoC-side cache request.
 wire [31:0] avm_address;           // byte address
 wire [31:0] avm_writedata;
 wire [31:0] avm_readdata;
@@ -360,18 +358,6 @@ wire        avm_valid;
 wire        avm_ready;
 wire        avm_readdatavalid;
 wire        mem_bus_ready;
-
-// Cache ↔ main_memory wires
-wire [31:0] cache_mm_addr;
-wire [31:0] cache_mm_din;
-wire [31:0] cache_mm_dout;
-wire  [3:0] cache_mm_be;
-wire  [7:0] cache_mm_burstcount;
-wire        cache_mm_valid;
-wire        cache_mm_write;
-wire        cache_mm_ready;
-wire        cache_mm_resp_valid;
-wire        cache_mm_busy;
 
 // main_memory to SDRAM (valid/ready)
 wire [31:0] mem_address;
@@ -405,19 +391,17 @@ wire        video_off_unused;
 // ============================================================================
 // z386 CPU
 // ============================================================================
-wire [31:0] cpu_cache_lookup_addr;
-wire        cpu_cache_lookup;
-wire        cpu_cache_lookup_write;
-wire        cpu_cache_lookup_cancel;
-wire        cpu_cache_lookup_ready;
-wire        cpu_cache_lookup_ready_raw;
-wire        cpu_cache_lookup_bypass;
+wire [31:0] dma_snoop_addr;
+wire        dma_snoop_valid;
 
-z386 z386_cpu (
+z386 #(
+    .PROTECT_UMA_ROM(1)
+) z386_cpu (
     .clk               (clk_sys),
     .reset_n           (cpu_reset_n),
     .addr              (cpu_addr),
     .be                (cpu_be),
+    .burstcount        (cpu_burstcount),
     .din               (cpu_din_z),
     .dout              (cpu_dout_z),
     .valid             (cpu_valid),
@@ -428,11 +412,8 @@ z386 z386_cpu (
     .intr              (cpu_intr),
     .nmi               (1'b0),
     .inta              (cpu_inta),
-    .cache_lookup_addr (cpu_cache_lookup_addr),
-    .cache_lookup      (cpu_cache_lookup),
-    .cache_lookup_write(cpu_cache_lookup_write),
-    .cache_lookup_cancel(cpu_cache_lookup_cancel),
-    .cache_lookup_ready(cpu_cache_lookup_ready),
+    .snoop_addr        (dma_snoop_addr),
+    .snoop_valid       (dma_snoop_valid),
     .single_step       (1'b0),
     .dbg_CS            (debug_cpu_cs),
     .dbg_EIP           (debug_cpu_eip),
@@ -484,96 +465,49 @@ wire [31:0] cpu_byte_addr = is_bios_mirror_alias
                           ? (BIOS_MIRROR_BASE + {14'd0, cpu_byte_addr_raw[17:0]})
                           : {7'h0, cpu_byte_addr_raw[24:0]};
 
-// After the boot ROM copy, UMA contains option ROM and BIOS ROM contents.
-// Treat only the physical 0x000C0000-0x000FFFFF window as write-protected.
-wire is_uma_rom = (cpu_byte_addr[24:18] == 7'b000_0011);
-wire cpu_mem_bypass = boot_done && cpu_mem_valid && cpu_mem_write && is_uma_rom;
-assign cpu_cache_lookup_bypass = 1'b0;
-// Keep the preread for every memory request. Under paging, a linear UMA address
-// can translate to normal RAM; only the later physical write decision is trusted.
-assign cpu_cache_lookup_ready = !boot_done || cpu_cache_lookup_ready_raw;
+// z386 owns the L1 internally, so UMA write-protect is handled at the CPU/cache
+// boundary through PROTECT_UMA_ROM. Nothing is bypassed here.
+wire cpu_mem_bypass = 1'b0;
 
-// Pass CPU signals to the cache. Keep the SD boot writer out of this bundle:
-// cache_enable/valid still gate the cache until boot_done, but removing the
-// boot mux avoids timing paths from sd_avm_address into cache preread state.
+// Pass CPU external memory signals to main_memory. z386 has already handled
+// cache lookup and fill sequencing internally.
 assign avm_address     = cpu_byte_addr;
 assign avm_writedata   = cpu_dout_z;
+assign avm_readdata    = mm_dout;
 assign avm_byteenable  = cpu_be;
 assign avm_valid       = boot_done && cpu_mem_valid && !cpu_mem_bypass;
 assign avm_write       = cpu_mem_write;
+assign avm_ready       = boot_done ? mm_ready : 1'b0;
+assign avm_readdatavalid = boot_done ? mm_resp_valid : 1'b0;
 
-// Memory ready signals from cache (not main_memory directly)
 reg mem_rom_wr_ready;
-always @(posedge clk_sys)
-    mem_rom_wr_ready <= cpu_mem_bypass;
+always @(posedge clk_sys) begin
+    if (reset)
+        mem_rom_wr_ready <= 1'b0;
+    else
+        mem_rom_wr_ready <= cpu_mem_bypass;
+end
 
 wire vga_wr_done;    // unused in ready path, still connected to main_memory output
-wire mem_bus_resp_valid = avm_readdatavalid | boot_avm_resp_valid;
-assign mem_bus_ready = avm_ready | boot_avm_ready | mem_rom_wr_ready;
+wire mem_bus_resp_valid = avm_readdatavalid;
+assign mem_bus_ready = avm_ready | mem_rom_wr_ready;
 
-// L1 cache: sits between CPU AVM bus and main_memory (active only after boot)
-// During boot (!boot_done), AVM connects directly to main_memory (bypass cache)
-assign cache_mm_busy = cache_mm_valid && !cache_mm_ready;
-
-// Cache-to-main_memory wires (active when boot_done)
+// Main memory wires. During boot the SD boot writer owns this port; after boot
+// it is driven by z386's external cache-fill/write-through bus.
 wire [31:0] mm_addr, mm_din, mm_dout;
 wire  [3:0] mm_be;
 wire  [7:0] mm_burstcount;
 wire        mm_valid, mm_write, mm_ready, mm_resp_valid;
 wire        dma_mem_ready;  // forward declaration (used in snoop_valid below)
 
-l1_cache #(
-    .SET_BITS(L1_CACHE_SET_BITS)
-) l1_cache_inst (
-    .clk               (clk_sys),
-    .reset             (reset),
-
-    .cpu_addr          (avm_address),
-    .cpu_din           (avm_writedata),
-    .cpu_dout          (avm_readdata),
-    .cpu_be            (avm_byteenable),
-    .cpu_valid         (avm_valid),
-    .cpu_write         (avm_write),
-    .cpu_ready         (avm_ready),
-    .cpu_resp_valid    (avm_readdatavalid),
-
-    .lookup_addr       (cpu_cache_lookup_addr),
-    .lookup            (cpu_cache_lookup && boot_done && !cpu_cache_lookup_bypass),
-    .lookup_cancel     ((cpu_cache_lookup_cancel || cpu_mem_bypass) && boot_done),
-    .lookup_ready      (cpu_cache_lookup_ready_raw),
-
-    .mem_addr          (cache_mm_addr),
-    .mem_din           (cache_mm_din),
-    .mem_dout          (mm_dout),
-    .mem_be            (cache_mm_be),
-    .mem_burstcount    (cache_mm_burstcount),
-    .mem_busy          (cache_mm_busy),
-    .mem_valid         (cache_mm_valid),
-    .mem_write         (cache_mm_write),
-    .mem_ready         (cache_mm_ready),
-    .mem_resp_valid    (cache_mm_resp_valid),
-
-    .snoop_addr        ({8'h0, dma_address}),
-    .snoop_valid       (dma_write && dma_mem_ready),  // dma_mem_ready declared below
-    .cache_enable      (boot_done)
-);
-
 // Mux: during boot, the SD boot writer goes directly to main_memory; after
-// boot, CPU memory traffic reaches main_memory through the cache.
-assign mm_addr       = boot_done ? cache_mm_addr       : sd_avm_address;
-assign mm_din        = boot_done ? cache_mm_din         : sd_avm_writedata;
-assign mm_be         = boot_done ? cache_mm_be          : sd_avm_byteenable;
-assign mm_burstcount = boot_done ? cache_mm_burstcount  : 8'd1;
-assign mm_valid      = boot_done ? cache_mm_valid       : sd_avm_write;
-assign mm_write      = boot_done ? cache_mm_write       : 1'b1;
-// Ready/resp_valid go back to either cache or AVM directly
-assign cache_mm_ready      = boot_done ? mm_ready      : 1'b0;
-assign cache_mm_resp_valid = boot_done ? mm_resp_valid  : 1'b0;
-
-// During boot, main_memory ready/resp go directly to AVM (bypass cache)
-wire boot_avm_ready, boot_avm_resp_valid;
-assign boot_avm_ready      = !boot_done ? mm_ready      : 1'b0;
-assign boot_avm_resp_valid = !boot_done ? mm_resp_valid  : 1'b0;
+// boot, CPU memory traffic reaches main_memory directly.
+assign mm_addr       = boot_done ? avm_address       : sd_avm_address;
+assign mm_din        = boot_done ? avm_writedata     : sd_avm_writedata;
+assign mm_be         = boot_done ? avm_byteenable    : sd_avm_byteenable;
+assign mm_burstcount = boot_done ? cpu_burstcount    : 8'd1;
+assign mm_valid      = boot_done ? avm_valid         : sd_avm_write;
+assign mm_write      = boot_done ? avm_write         : 1'b1;
 
 // Main memory (SDRAM + VGA hole)
 main_memory main_memory (
@@ -630,6 +564,12 @@ reg         dma_held_wr;
 reg  [23:0] dma_held_addr;
 reg  [15:0] dma_held_data;
 reg         dma_held_16bit;
+assign dma_snoop_addr = {8'h0, dma_held_addr};
+// Invalidate while a DMA write is pending, not only in the exact SDRAM accept
+// cycle. This is conservative and keeps SDRAM port arbitration out of the cache
+// preread invalidation path.
+assign dma_snoop_valid = boot_done && dma_held_valid && dma_held_wr;
+
 always @(posedge clk_sys) begin
     if (rst[0]) begin
         dma_held_valid <= 0;
@@ -649,6 +589,12 @@ end
 reg         dma_mem_wr;          // latches write flag on acceptance for resp_valid
 wire [31:0] dma_mem_dout;
 wire        dma_mem_resp_valid;
+wire [3:0]  dma_mem_be = dma_held_16bit ?
+    (dma_held_addr[1] ? 4'b1100 : 4'b0011) :
+    (4'b0001 << dma_held_addr[1:0]);
+wire [31:0] dma_mem_din = dma_held_16bit ?
+    (dma_held_addr[1] ? {dma_held_data, 16'h0000} : {16'h0000, dma_held_data}) :
+    ({24'h0, dma_held_data[7:0]} << {dma_held_addr[1:0], 3'b000});
 
 sdram #(
     .FREQ(SYS_FREQ),
@@ -678,10 +624,10 @@ sdram #(
 	.ready1            (dma_mem_ready),
 	.wr1               (dma_held_wr),
 	.addr1             ({1'b0, dma_held_addr}),
-	.din1              ({dma_held_data, dma_held_data}),
+	.din1              (dma_mem_din),
 	.dout1             (dma_mem_dout),
 	.resp_valid1       (dma_mem_resp_valid),
-	.be1               (dma_held_16bit ? 4'b0011 : 4'b0001),
+	.be1               (dma_mem_be),
 	.burst_cnt1        (4'd1),
 	.burst_done1       (),
 

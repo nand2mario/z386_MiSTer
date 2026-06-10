@@ -4,7 +4,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/system.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/iobus_adapter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/pic_inta_bridge.sv
 
-set_global_assignment -name SYSTEMVERILOG_FILE src/memory/l1_cache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/memory/main_memory.sv
 set_global_assignment -name VERILOG_FILE src/memory/sdram.v
 set_global_assignment -name SYSTEMVERILOG_FILE src/memory/sdram_x2_wrapper.sv
