@@ -28,6 +28,7 @@ REVISION = "z386_mister"
 MAIN_CLOCK_MARKER = "emu|pll|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk"
 CLK_SYS_TOP_SETUP_RPT = f"{REVISION}.clk_sys_top_setup.rpt"
 CLK_SYS_TOP_SETUP_TCL = f"{REVISION}.clk_sys_top_setup.tcl"
+REQUIRED_BUILD_PROFILE = "production"
 
 
 @dataclass
@@ -67,6 +68,24 @@ def patch_global_assignment(qsf: Path, name: str, value: str, comment: str | Non
     qsf.write_text(text)
 
 
+def active_build_profile(qsf: Path) -> str | None:
+    match = re.search(r"^# Active profile:\s+(\w+)\s*$", qsf.read_text(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def require_production_profile(qsf: Path) -> None:
+    active = active_build_profile(qsf)
+    if active != REQUIRED_BUILD_PROFILE:
+        if active is None:
+            state = "no active build_profile.py marker"
+        else:
+            state = f"active profile is {active!r}"
+        raise SystemExit(
+            "seed_sweep.py only runs with the production build profile; "
+            f"{state}. Run ./build_profile.py production first."
+        )
+
+
 def resolve_processors_per_job(jobs: int, requested: int | None) -> int | None:
     if jobs < 1:
         raise SystemExit("--jobs must be >= 1")
@@ -91,6 +110,16 @@ def assert_signaltap_disabled(qsf: Path) -> None:
             active_bad.append(f"{line_no}: {raw}")
     if active_bad:
         raise RuntimeError("SignalTap is still enabled or referenced:\n" + "\n".join(active_bad))
+
+
+def event_stamp() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def print_event(message: str, *, blank_before: bool = False) -> None:
+    if blank_before:
+        print()
+    print(f"[{event_stamp()}] {message}", flush=True)
 
 
 def run_cmd(cmd: list[str], cwd: Path, log: Path, stream: bool = True) -> int:
@@ -415,6 +444,7 @@ def main() -> int:
     qsf = project_dir / f"{PROJECT}.qsf"
     if not qsf.exists():
         raise SystemExit(f"missing QSF: {qsf}")
+    require_production_profile(qsf)
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
     out_dir = (args.out or (project_dir / "seed_sweep" / stamp)).resolve()
@@ -429,7 +459,7 @@ def main() -> int:
     try:
         if args.jobs <= 1:
             for seed in seeds:
-                print(f"\n=== seed {seed} ===")
+                print_event(f"=== seed {seed} ===", blank_before=True)
                 result = run_one_seed(
                     seed=seed,
                     project_dir=project_dir,
@@ -445,7 +475,7 @@ def main() -> int:
                 results.append(result)
                 write_csv(out_dir / "summary.csv", results)
                 write_markdown(out_dir / "summary.md", results)
-                print(
+                print_event(
                     f"seed {seed}: {result.status}, fmax={result.fmax_mhz} MHz, "
                     f"setup={result.setup_slack} ns, hold={result.hold_slack} ns"
                 )
@@ -454,9 +484,9 @@ def main() -> int:
                     break
         else:
             if args.work_root is not None:
-                print("warning: --work-root is ignored; per-seed work trees live under the sweep output")
+                print_event("warning: --work-root is ignored; per-seed work trees live under the sweep output")
 
-            print(
+            print_event(
                 f"Parallel sweep: jobs={args.jobs}, processors_per_job={processors_per_job}, "
                 f"work_root={out_dir}/seed_XX/work"
             )
@@ -470,7 +500,7 @@ def main() -> int:
                         seed = next(seed_iter)
                     except StopIteration:
                         return
-                    print(f"=== seed {seed} submitted ===")
+                    print_event(f"=== seed {seed} submitted ===")
                     fut = executor.submit(
                         run_one_seed,
                         seed,
@@ -511,7 +541,7 @@ def main() -> int:
                         results.sort(key=lambda r: r.seed)
                         write_csv(out_dir / "summary.csv", results)
                         write_markdown(out_dir / "summary.md", results)
-                        print(
+                        print_event(
                             f"seed {seed}: {result.status}, fmax={result.fmax_mhz} MHz, "
                             f"setup={result.setup_slack} ns, hold={result.hold_slack} ns"
                         )
@@ -528,8 +558,8 @@ def main() -> int:
                 work_dir = out_dir / f"seed_{seed:02d}" / "work"
                 if work_dir.exists():
                     shutil.rmtree(work_dir)
-        print(f"\nRestored {qsf}")
-        print(f"Sweep output: {out_dir}")
+        print_event(f"Restored {qsf}", blank_before=True)
+        print_event(f"Sweep output: {out_dir}")
 
     return 0 if all(r.status == "ok" for r in results) else 1
 

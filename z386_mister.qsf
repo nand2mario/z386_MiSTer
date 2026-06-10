@@ -21,6 +21,9 @@ set_global_assignment -name MAX_CORE_JUNCTION_TEMP 100
 set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "23 MM HEAT SINK WITH 200 LFPM AIRFLOW"
 set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
 set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
+# BEGIN build_profile.py settings
+# Active profile: production
+# 85 MHz clk_sys, 180 degree SDRAM clock, z386 timing optimization set
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
@@ -47,6 +50,7 @@ set_global_assignment -name ALM_REGISTER_PACKING_EFFORT LOW
 set_global_assignment -name OPTIMIZE_POWER_DURING_SYNTHESIS OFF
 set_global_assignment -name ROUTER_REGISTER_DUPLICATION ON
 set_global_assignment -name SEED 6
+# END build_profile.py settings
 set_global_assignment -name VERILOG_MACRO "Z386_QUARTUS_M10K_UCODE=1"
 set_global_assignment -name VERILOG_MACRO "Z386_ALTERA_ALU=1"
 
@@ -298,6 +302,10 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/z386/prefetch.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/protection.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/segmentation_unit.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
+
+
+
+
 
 
 

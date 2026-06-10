@@ -22,11 +22,11 @@ module  pll_0002(
 		.reference_clock_frequency("50.0 MHz"),
 		.operation_mode("direct"),
 		.number_of_clocks(2),
-		.output_clock_frequency0("85.000000 MHz"),
+		.output_clock_frequency0("65.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("85.000000 MHz"),
-		.phase_shift1("5882 ps"),
+		.output_clock_frequency1("65.000000 MHz"),
+		.phase_shift1("7692 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("0 MHz"),
 		.phase_shift2("0 ps"),
@@ -87,3 +87,4 @@ module  pll_0002(
 		.refclk	(refclk)
 	);
 endmodule
+
