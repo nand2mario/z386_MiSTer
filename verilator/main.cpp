@@ -60,6 +60,7 @@ static uint64_t trace_start_cycle = 0;
 static uint64_t current_cycle = 0;
 
 static string disk_path = "freedos.img";
+static string floppy_path;
 static string boot0_path = "boot0.rom";
 static string boot1_path = "boot1.rom";
 static std::array<bool, 256> boot_pages_seen{};
@@ -213,6 +214,169 @@ static vector<uint8_t> read_file(const string& path) {
 	return data;
 }
 
+struct FloppyGeometry {
+	uint8_t cylinders = 80;
+	uint8_t sectors_per_track = 18;
+	uint16_t total_sectors = 2880;
+	uint8_t heads = 2;
+	uint8_t cmos_type = 4; // 1.44 MB 3.5"
+};
+
+static FloppyGeometry infer_floppy_geometry(size_t image_size) {
+	const uint32_t sectors = static_cast<uint32_t>(image_size / 512);
+	FloppyGeometry geo{};
+	geo.total_sectors = static_cast<uint16_t>(std::min<uint32_t>(sectors, 0xFFFF));
+
+	switch (sectors) {
+	case 320:  geo = {40,  8,  320, 1, 1}; break; // 160 KB
+	case 360:  geo = {40,  9,  360, 1, 1}; break; // 180 KB
+	case 640:  geo = {40,  8,  640, 2, 1}; break; // 320 KB
+	case 720:  geo = {40,  9,  720, 2, 1}; break; // 360 KB
+	case 1440: geo = {80,  9, 1440, 2, 3}; break; // 720 KB
+	case 2400: geo = {80, 15, 2400, 2, 2}; break; // 1.2 MB
+	case 2880: geo = {80, 18, 2880, 2, 4}; break; // 1.44 MB
+	case 5760: geo = {80, 36, 5760, 2, 5}; break; // 2.88 MB
+	default:
+		geo.cylinders = (sectors <= 720) ? 40 : 80;
+		geo.heads = (sectors <= 360) ? 1 : 2;
+		geo.sectors_per_track = static_cast<uint8_t>(
+			std::max<uint32_t>(1, sectors / (geo.cylinders * geo.heads)));
+		break;
+	}
+	return geo;
+}
+
+class HpsFloppy {
+public:
+	bool open(const string& path) {
+		image_ = read_file(path);
+		if (image_.empty() || (image_.size() % 512) != 0)
+			throw std::runtime_error("floppy image must be a non-empty whole-sector image: " + path);
+		image_name_ = fs::path(path).filename().string();
+		geo_ = infer_floppy_geometry(image_.size());
+		present_ = true;
+		cout << "Mounted floppy A: " << image_name_
+		     << " sectors=" << geo_.total_sectors
+		     << " cyl=" << static_cast<int>(geo_.cylinders)
+		     << " heads=" << static_cast<int>(geo_.heads)
+		     << " spt=" << static_cast<int>(geo_.sectors_per_track)
+		     << "\n";
+		return true;
+	}
+
+	bool present() const { return present_; }
+	const FloppyGeometry& geometry() const { return geo_; }
+
+	void tick(Vz386_mister_sim& tb) {
+		if (tb.reset) {
+			state_ = IDLE;
+			cnt_ = 0;
+			return;
+		}
+
+		switch (state_) {
+		case IDLE:
+			if (!present_) return;
+			if (tb.fdd_request & 1) {
+				pulse_read(tb, 0xF200);
+				state_ = READ_GET_SECTOR;
+			} else if (tb.fdd_request & 2) {
+				pulse_read(tb, 0xF200);
+				state_ = WRITE_GET_SECTOR;
+			}
+			break;
+
+		case READ_GET_SECTOR:
+			selected_drive_ = (tb.mgmt_readdata >> 15) & 1;
+			sector_ = tb.mgmt_readdata & 0x7FFF;
+			cnt_ = 0;
+			if (selected_drive_ != 0)
+				cout << "FDD: unsupported drive B read request\n";
+			else
+				cout << "FDD: READ sector=" << sector_ << "\n";
+			state_ = READ_SEND;
+			break;
+
+		case READ_SEND:
+			if (cnt_ < 512) {
+				pulse_write(tb, 0xF20F, read_byte(sector_, cnt_));
+				cnt_++;
+			} else {
+				state_ = IDLE;
+			}
+			break;
+
+		case WRITE_GET_SECTOR:
+			selected_drive_ = (tb.mgmt_readdata >> 15) & 1;
+			sector_ = tb.mgmt_readdata & 0x7FFF;
+			cnt_ = 0;
+			if (selected_drive_ != 0)
+				cout << "FDD: unsupported drive B write request\n";
+			else
+				cout << "FDD: WRITE sector=" << sector_ << "\n";
+			pulse_read(tb, 0xF20F);
+			state_ = WRITE_RECV;
+			break;
+
+		case WRITE_RECV:
+			if (cnt_ > 0)
+				write_byte(sector_, cnt_ - 1, tb.mgmt_readdata);
+			if (cnt_ < 512) {
+				pulse_read(tb, 0xF20F);
+				cnt_++;
+			} else {
+				state_ = IDLE;
+			}
+			break;
+		}
+	}
+
+private:
+	enum State {
+		IDLE,
+		READ_GET_SECTOR,
+		READ_SEND,
+		WRITE_GET_SECTOR,
+		WRITE_RECV
+	};
+
+	static void pulse_read(Vz386_mister_sim& tb, uint16_t addr) {
+		tb.mgmt_address = addr;
+		tb.mgmt_read = 1;
+		tb.mgmt_write = 0;
+	}
+
+	static void pulse_write(Vz386_mister_sim& tb, uint16_t addr, uint16_t data) {
+		tb.mgmt_address = addr;
+		tb.mgmt_writedata = data;
+		tb.mgmt_write = 1;
+		tb.mgmt_read = 0;
+	}
+
+	uint8_t read_byte(uint32_t sector, int byte_index) const {
+		if (selected_drive_ != 0) return 0;
+		size_t offset = static_cast<size_t>(sector) * 512u + static_cast<size_t>(byte_index);
+		if (offset >= image_.size()) return 0;
+		return image_[offset];
+	}
+
+	void write_byte(uint32_t sector, int byte_index, uint16_t data) {
+		if (selected_drive_ != 0) return;
+		size_t offset = static_cast<size_t>(sector) * 512u + static_cast<size_t>(byte_index);
+		if (offset >= image_.size()) return;
+		image_[offset] = static_cast<uint8_t>(data);
+	}
+
+	State state_ = IDLE;
+	bool present_ = false;
+	FloppyGeometry geo_{};
+	vector<uint8_t> image_;
+	string image_name_;
+	uint32_t sector_ = 0;
+	int cnt_ = 0;
+	uint8_t selected_drive_ = 0;
+};
+
 static void queue_ps2_bytes(const std::vector<uint8_t>& bytes) {
 	kbd_scancode_queue.insert(kbd_scancode_queue.end(), bytes.begin(), bytes.end());
 }
@@ -335,14 +499,14 @@ static std::string current_text_screen() {
 	text.reserve(25 * 81);
 	uint16_t start = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_address_start);
 	uint16_t byte_panning = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_address_byte_panning);
-	uint16_t stride = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_address_offset) << 1;
+	uint16_t stride = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_address_offset) << 2;
 	uint16_t cols = static_cast<uint16_t>(sys->__PVT__vga_inst__DOT__crtc_horizontal_display_size) + 1;
-	if (cols == 0 || cols > 160) cols = 80;
-	if (stride == 0 || stride > 4096) stride = cols;
+	if (cols == 0 || cols > 80) cols = 80;
+	if (stride == 0 || stride > 4096) stride = cols << 1;
 	uint16_t row_addr = start + byte_panning;
 	for (int row = 0; row < 25; ++row) {
 		for (uint16_t col = 0; col < cols; ++col) {
-			uint8_t ch = sys->__PVT__vga_inst__DOT__plane_ram_0__DOT__mem[static_cast<uint16_t>(row_addr + col)];
+			uint8_t ch = sys->__PVT__vga_inst__DOT__plane_ram_0__DOT__mem[static_cast<uint16_t>(row_addr + (col << 1))];
 			if (ch < 0x20 || ch > 0x7e) ch = ' ';
 			text.push_back(static_cast<char>(ch));
 		}
@@ -458,18 +622,19 @@ static uint8_t bin2bcd(unsigned val) {
 	return static_cast<uint8_t>(((val / 10) << 4) | (val % 10));
 }
 
-static void configure_floppy_slot(unsigned slot, bool present) {
+static void configure_floppy_slot(unsigned slot, bool present, const FloppyGeometry& geo = FloppyGeometry{}) {
 	uint16_t base = static_cast<uint16_t>(0xF200 + (slot << 7));
 	pulse_mgmt_write(base + 0x0, present ? 1 : 0);
 	pulse_mgmt_write(base + 0x1, 1);
-	pulse_mgmt_write(base + 0x2, 0);
-	pulse_mgmt_write(base + 0x3, 0);
-	pulse_mgmt_write(base + 0x4, 0);
-	pulse_mgmt_write(base + 0x5, 0);
+	pulse_mgmt_write(base + 0x2, present ? geo.cylinders : 0);
+	pulse_mgmt_write(base + 0x3, present ? geo.sectors_per_track : 0);
+	pulse_mgmt_write(base + 0x4, present ? geo.total_sectors : 0);
+	pulse_mgmt_write(base + 0x5, present ? geo.heads : 0);
 	pulse_mgmt_write(base + 0xC, 0);
 }
 
-static void configure_cmos(bool hdd0_present, bool floppy0_present, bool boot_from_floppy = false) {
+static void configure_cmos(bool hdd0_present, bool floppy0_present, const FloppyGeometry& floppy0_geo,
+                           bool boot_from_floppy = false) {
 	std::time_t now = std::time(nullptr);
 	std::tm tm{};
 	localtime_r(&now, &tm);
@@ -491,7 +656,7 @@ static void configure_cmos(bool hdd0_present, bool floppy0_present, bool boot_fr
 	cmos[0x0B] = 0x02;
 	cmos[0x0D] = 0x80;
 
-	cmos[0x10] = 0x00;
+	cmos[0x10] = static_cast<uint8_t>(floppy0_present ? (floppy0_geo.cmos_type << 4) : 0x00);
 	cmos[0x12] = static_cast<uint8_t>((hdd0_present ? 0xF : 0x0) << 4);
 	cmos[0x14] = 0x4D;
 	cmos[0x15] = 0x80;
@@ -519,14 +684,14 @@ static void configure_cmos(bool hdd0_present, bool floppy0_present, bool boot_fr
 	}
 }
 
-static void configure_x86_management(bool hdd0_present) {
-	configure_floppy_slot(0, false);
+static void configure_x86_management(bool hdd0_present, const HpsFloppy& floppy0, bool boot_from_floppy) {
+	configure_floppy_slot(0, floppy0.present(), floppy0.geometry());
 	configure_floppy_slot(1, false);
-	configure_cmos(hdd0_present, false, false);
+	configure_cmos(hdd0_present, floppy0.present(), floppy0.geometry(), boot_from_floppy);
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
 }
 
 int main(int argc, char** argv) {
@@ -556,6 +721,8 @@ int main(int argc, char** argv) {
 			max_cycles = std::stoull(argv[++i]);
 		} else if (arg == "--disk" && i + 1 < argc) {
 			disk_path = argv[++i];
+		} else if (arg == "--floppy" && i + 1 < argc) {
+			floppy_path = argv[++i];
 		} else if (arg == "--boot0" && i + 1 < argc) {
 			boot0_path = argv[++i];
 		} else if (arg == "--boot1" && i + 1 < argc) {
@@ -580,6 +747,9 @@ int main(int argc, char** argv) {
 			checkpoint_keep = static_cast<size_t>(std::stoull(argv[++i]));
 		} else if (arg == "--restore" && i + 1 < argc) {
 			restore_path = argv[++i];
+		} else if (!arg.empty() && arg[0] == '+') {
+			// Verilator plusargs are consumed by Verilated::commandArgs() and
+			// may be used by RTL diagnostics via $test$plusargs.
 		} else {
 			usage();
 			return 1;
@@ -631,11 +801,20 @@ int main(int argc, char** argv) {
 
 	HpsIde ide0(0, 0xF000);
 	HpsIde ide1(1, 0xF100);
+	HpsFloppy floppy0;
 	ide0.set_debug(g_ide_debug);
 	ide1.set_debug(g_ide_debug);
 	if (restore_path.empty() && !ide0.open(disk_path)) {
 		cerr << "failed to open disk image " << disk_path << "\n";
 		return 1;
+	}
+	if (restore_path.empty() && !floppy_path.empty()) {
+		try {
+			floppy0.open(floppy_path);
+		} catch (const std::exception& e) {
+			cerr << e.what() << "\n";
+			return 1;
+		}
 	}
 
 	SDL_Window* sdl_window = nullptr;
@@ -718,7 +897,7 @@ int main(int argc, char** argv) {
 		full_step();
 		tb.reset = 0;
 		full_step();
-		configure_x86_management(ide0.present());
+		configure_x86_management(ide0.present(), floppy0, floppy0.present());
 	}
 	trace_loop_started = true;
 
@@ -1119,6 +1298,7 @@ int main(int argc, char** argv) {
 		tb.mgmt_write = 0;
 		ide0.tick(tb);
 		if (!tb.mgmt_read && !tb.mgmt_write) ide1.tick(tb);
+		if (!tb.mgmt_read && !tb.mgmt_write) floppy0.tick(tb);
 
 		if (!tb.clk_sys) {
 			keyboard_send_pre(cycle);
