@@ -94,13 +94,14 @@ reg [27:0] clk_rate;
 always @(posedge clk) clk_rate <= clock_rate;
 
 reg ce_1us;
+// Keep the accumulator outside the always block. Verilator treats a block-local
+// declaration here as automatic, which prevents the 1 us tick from accumulating.
+reg [27:0] ce_1us_sum = 0;
 always @(posedge clk) begin
-	reg [27:0] sum = 0;
-
 	ce_1us = 0;
-	sum = sum + 28'd1000000;
-	if(sum >= clk_rate) begin
-		sum = sum - clk_rate;
+	ce_1us_sum = ce_1us_sum + 28'd1000000;
+	if(ce_1us_sum >= clk_rate) begin
+		ce_1us_sum = ce_1us_sum - clk_rate;
 		ce_1us = 1;
 	end
 end
