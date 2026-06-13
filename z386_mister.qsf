@@ -280,7 +280,7 @@ set_global_assignment -name ENABLE_SIGNALTAP OFF
 
 
 
-set_global_assignment -name MISC_FILE src/z386/ucode45.mif
+set_global_assignment -name MISC_FILE src/z386/ucode.mif
 set_global_assignment -name QIP_FILE backend.qip
 set_global_assignment -name SDC_FILE z386_mister.sdc
 set_global_assignment -name SEARCH_PATH sys

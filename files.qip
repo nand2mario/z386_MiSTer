@@ -17,5 +17,5 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/z386/protection.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/segmentation_unit.sv
 set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
 
-set_global_assignment -name MISC_FILE src/z386/ucode45.mif
+set_global_assignment -name MISC_FILE src/z386/ucode.mif
 set_global_assignment -name SDC_FILE z386_mister.sdc
