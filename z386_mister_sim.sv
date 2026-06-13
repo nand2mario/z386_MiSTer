@@ -79,7 +79,10 @@ module z386_mister_sim (
 	output        soft_reset_req
 );
 
-parameter [27:0] CLOCK_RATE_HZ = 28'd50_000_000;
+// Sim timebase: a slower virtual CPU clock means fewer core cycles per
+// game-second (PIT/VGA/RTC all scale), so real-time-paced content (Doom
+// demos) reaches a given game event in proportionally less simulation time.
+parameter [27:0] CLOCK_RATE_HZ = 28'd20_000_000;
 
 wire        software_reset;
 reg  [7:0]  software_reset_count;

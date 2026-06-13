@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "Vz386_mister_sim.h"
 #include "Vz386_mister_sim__Syms.h"
 #include "Vz386_mister_sim_z386_mister_sim.h"
@@ -38,7 +39,7 @@ using std::string;
 using std::vector;
 namespace fs = std::filesystem;
 
-#include "scancode.h"
+#include "../../12.386tang/verilator/scancode.h"
 
 static constexpr int H_RES = 1600;
 static constexpr int V_RES = 900;
@@ -59,7 +60,7 @@ static bool trace_loop_started = false;
 static uint64_t trace_start_cycle = 0;
 static uint64_t current_cycle = 0;
 
-static string disk_path = "freedos.img";
+static string disk_path = "../../sdcard/freedos.img";
 static string floppy_path;
 static string boot0_path = "boot0.rom";
 static string boot1_path = "boot1.rom";
@@ -635,7 +636,11 @@ static void configure_floppy_slot(unsigned slot, bool present, const FloppyGeome
 
 static void configure_cmos(bool hdd0_present, bool floppy0_present, const FloppyGeometry& floppy0_geo,
                            bool boot_from_floppy = false) {
-	std::time_t now = std::time(nullptr);
+	// RTC seed: host wall-clock by default, but a fixed value when
+	// Z386_FIXED_RTC is set, so two sim runs are bit-identical from reset
+	// (needed for cross-build diffs — otherwise the CMOS time read in BIOS
+	// POST diverges and contaminates the comparison).
+	std::time_t now = std::getenv("Z386_FIXED_RTC") ? (std::time_t)1700000000 : std::time(nullptr);
 	std::tm tm{};
 	localtime_r(&now, &tm);
 
@@ -1426,11 +1431,15 @@ int main(int argc, char** argv) {
 				last_render_ms = now;
 
 				if (now - last_title_ms >= 1000) {
+					// sim_time advances 2 units per clk_sys cycle (one per edge).
+					// Use the measured wall interval: the title refresh is gated
+					// by the 33ms render tick, so it is not exactly 1000ms.
 					uint64_t delta_cycles = (sim_time - last_title_sim_time) / 2;
+					double elapsed_ms = (double)(now - last_title_ms);
 					bool trace_active = trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle;
 					char title[192];
-					snprintf(title, sizeof(title), "z386 MiSTer - %.1f MHz%s%s",
-						delta_cycles / 1000000.0,
+					snprintf(title, sizeof(title), "z386 MiSTer - %.2f MHz%s%s",
+						delta_cycles / (elapsed_ms * 1000.0),
 						trace_active ? " [TRACE]" : "",
 						mouse_captured ? " [MOUSE CAPTURED - ESC/GUI-ESC to release]" : "");
 					SDL_SetWindowTitle(sdl_window, title);

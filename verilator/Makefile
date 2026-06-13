@@ -36,27 +36,20 @@ SOURCES = ../z386_mister_sim.sv \
 
 CPP_SOURCES = main.cpp ide_hps.cpp
 
-FREEDOS_ZIP = freedos.zip
-FREEDOS_IMG = freedos.img
+all: obj_dir/Vz386_mister_sim
 
-all: obj_dir/Vz386_mister_sim $(FREEDOS_IMG)
-
-$(FREEDOS_IMG): $(FREEDOS_ZIP)
-	unzip -o $(FREEDOS_ZIP) $(FREEDOS_IMG)
-	touch $(FREEDOS_IMG)
-
-obj_dir/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../src/z386/ucode45.hex
-	ln -sf ../src/z386/ucode45.hex .
+obj_dir/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../src/z386/ucode.hex
+	ln -sf ../src/z386/ucode.hex .
 	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_INCLUDE) $(SOURCES) $(CPP_SOURCES)
 
-run: obj_dir/Vz386_mister_sim $(FREEDOS_IMG)
+run: obj_dir/Vz386_mister_sim
 	./obj_dir/Vz386_mister_sim --enter-at 10000000
 
-trace: obj_dir/Vz386_mister_sim $(FREEDOS_IMG)
+trace: obj_dir/Vz386_mister_sim
 	./obj_dir/Vz386_mister_sim --trace
 
 clean:
 	rm -rf obj_dir
-	rm -f ucode45.hex waveform.fst $(FREEDOS_IMG)
+	rm -f ucode.hex waveform.fst
 
 .PHONY: all run trace clean
