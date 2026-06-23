@@ -20,3 +20,26 @@ jtag.cdf
 !z386_mister_sim.sv
 simulation/
 synthesis/
+
+# Build-profile artifacts: copied wholesale from profiles/<name>/ by
+# build_profile.py.  Source of truth is profiles/; the working copies are
+# derived, so switching profiles must not dirty the tree.
+/rtl/pll.qip
+/rtl/pll.v
+/rtl/pll/pll_0002.v
+
+# sim / sweep / build artifacts
+__pycache__/
+build_id.v
+c5_pin_model_dump.txt
+seed_sweep/
+tests/
+verilator/ckpt_mat/
+verilator/*.log
+verilator/*.wav
+verilator/eip_*.txt
+verilator/*.img
+verilator/*.fst
+verilator/*.hex
+verilator/*.txt
+verilator/*.gtkw

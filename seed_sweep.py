@@ -397,6 +397,7 @@ def write_markdown(path: Path, results: list[Result]) -> None:
         "status",
         "fmax_mhz",
         "setup_slack",
+        "setup_tns",
         "hold_slack",
         "alms",
         "elapsed_s",
@@ -477,7 +478,8 @@ def main() -> int:
                 write_markdown(out_dir / "summary.md", results)
                 print_event(
                     f"seed {seed}: {result.status}, fmax={result.fmax_mhz} MHz, "
-                    f"setup={result.setup_slack} ns, hold={result.hold_slack} ns"
+                    f"WNS={result.setup_slack} ns, TNS={result.setup_tns} ns, "
+                    f"hold={result.hold_slack} ns"
                 )
 
                 if result.status != "ok" and args.stop_on_fail:
@@ -543,7 +545,8 @@ def main() -> int:
                         write_markdown(out_dir / "summary.md", results)
                         print_event(
                             f"seed {seed}: {result.status}, fmax={result.fmax_mhz} MHz, "
-                            f"setup={result.setup_slack} ns, hold={result.hold_slack} ns"
+                            f"WNS={result.setup_slack} ns, TNS={result.setup_tns} ns, "
+                            f"hold={result.hold_slack} ns"
                         )
 
                         if result.status != "ok" and args.stop_on_fail:
