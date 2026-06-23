@@ -168,7 +168,7 @@ module saa1099_triplet
 	input        wr_addr,
 	input        wr_data,
 
-	output[21:0] out
+	output reg [21:0] out
 );
 
 wire       tone0, tone1, tone2, noise;
@@ -184,8 +184,18 @@ saa1099_amp amp0(.*, .mixmode({noise_en[0], freq_en[0]}), .tone(tone0), .envreg(
 saa1099_amp amp1(.*, .mixmode({noise_en[1], freq_en[1]}), .tone(tone1), .envreg(0),   .vol(vol[1]), .out(out1));
 saa1099_amp amp2(.*, .mixmode({noise_en[2], freq_en[2]}), .tone(tone2), .envreg(env), .vol(vol[2]), .out(out2));
 
-assign out[10:0]  = {2'b00, out0[8:0] } + {2'b00, out1[8:0] } + {2'b00, out2[8:0] };
-assign out[21:11] = {2'b00, out0[17:9]} + {2'b00, out1[17:9]} + {2'b00, out2[17:9]};
+// Register the triplet sum so the amp+adder chain and the downstream output
+// mixer's 91x DSP multiply land in separate clk_sys stages (the unregistered
+// tone->amp->sum->mult chain was a ~15.4ns combinational path, the design's
+// worst clk_sys setup path).  The audio datapath advances on the 8MHz ce, so
+// this 1-clk_sys-cycle latency is inaudible and L/R stay aligned.
+always @(posedge clk_sys) begin
+	if(rst) out <= 0;
+	else begin
+		out[10:0]  <= {2'b00, out0[8:0] } + {2'b00, out1[8:0] } + {2'b00, out2[8:0] };
+		out[21:11] <= {2'b00, out0[17:9]} + {2'b00, out1[17:9]} + {2'b00, out2[17:9]};
+	end
+end
 
 endmodule
 
