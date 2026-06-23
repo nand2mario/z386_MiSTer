@@ -172,6 +172,8 @@ module system (
 parameter SYS_FREQ = 50_000_000;
 parameter SDRAM_HAS_DQM = 1'b1;
 parameter SDRAM_FAST_GRADE = 1'b1;
+parameter DCACHE_SET_BITS = 8;   // dcache size: 8 = 16KB, 7 = 8KB
+parameter ICACHE_SET_BITS = 8;   // icache size: 8 = 16KB, 7 = 8KB
 
 assign cpu_pe      = debug_cpu_pe;
 assign cpu_vm      = debug_cpu_vm;
@@ -395,7 +397,9 @@ wire [31:0] dma_snoop_addr;
 wire        dma_snoop_valid;
 
 z386 #(
-    .PROTECT_UMA_ROM(1)
+    .PROTECT_UMA_ROM(1),
+    .DCACHE_SET_BITS(DCACHE_SET_BITS),
+    .ICACHE_SET_BITS(ICACHE_SET_BITS)
 ) z386_cpu (
     .clk               (clk_sys),
     .reset_n           (cpu_reset_n),
