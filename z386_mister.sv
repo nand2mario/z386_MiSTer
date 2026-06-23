@@ -103,6 +103,8 @@ module emu
 );
 
 localparam CLOCK_RATE_HZ = 85_000_000;
+localparam DCACHE_SET_BITS = 8;   // dcache size: 8 = 16KB, 7 = 8KB (4 ways x 16B/line)
+localparam ICACHE_SET_BITS = 8;   // icache size: 8 = 16KB, 7 = 8KB
 
 localparam CONF_STR = {
 	"Z386;UART115200;",
@@ -450,7 +452,9 @@ hps_ext hps_ext
 system #(
 	.SYS_FREQ(CLOCK_RATE_HZ),
 	.SDRAM_HAS_DQM(1'b0),
-	.SDRAM_FAST_GRADE(1'b1)
+	.SDRAM_FAST_GRADE(1'b1),
+	.DCACHE_SET_BITS(DCACHE_SET_BITS),
+	.ICACHE_SET_BITS(ICACHE_SET_BITS)
 ) core (
 	.clk_sys             (clk_sys),
 	.reset               (reset_sync_r[2]),
