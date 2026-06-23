@@ -138,6 +138,15 @@ reg [15:0] dq_out;
 assign SDRAM_DQ = dq_oen ? {16{1'bZ}} : dq_out;
 wire [15:0] dq_in = SDRAM_DQ;
 
+// Single registered DQ capture.  This is the ONLY register that reads the DQ
+// pins, so FAST_INPUT_REGISTER packs it into the IOB input cell -> deterministic,
+// placement-independent read timing (previously rd_lo16/dout_word/dout_buf each
+// read the raw pin, so only one could pack into the IOB and the rest captured
+// through placement-dependent fabric routing).  dq_r lags dq_in by one cycle, so
+// the READ/RMW_READ capture thresholds below are pushed out by 1.
+reg  [15:0] dq_r;
+always @(posedge clk) dq_r <= dq_in;
+
 // Command/address
 reg [2:0]  cmd;
 reg [12:0] a;
@@ -413,18 +422,18 @@ always @(posedge clk) begin
             rd_issued <= rd_issued + 5'd1;
         end
 
-        // Capture returning 16-bit data after CAS latency
-        if ((cycle >= (T_RCD + CAS + 1)) && (rd_received < rd_issued)) begin
+        // Capture returning 16-bit data after CAS latency (+1 for the dq_r stage)
+        if ((cycle >= (T_RCD + CAS + 2)) && (rd_received < rd_issued)) begin
             if (!rd_received[0]) begin
-                rd_lo16 <= dq_in;                 // low half
+                rd_lo16 <= dq_r;                  // low half
             end else begin
-                dout_word <= {dq_in, rd_lo16};    // high half completes a 32-bit word
+                dout_word <= {dq_r, rd_lo16};     // high half completes a 32-bit word
                 data_resp_pulse <= 1'b1;
                 // Update per-port holding register so dout* remains valid after the pulse
                 case (req_id_buf)
-                2'd0: dout_buf0 <= {dq_in, rd_lo16};
-                2'd1: dout_buf1 <= {dq_in, rd_lo16};
-                default: dout_buf2 <= {dq_in, rd_lo16};
+                2'd0: dout_buf0 <= {dq_r, rd_lo16};
+                2'd1: dout_buf1 <= {dq_r, rd_lo16};
+                default: dout_buf2 <= {dq_r, rd_lo16};
                 endcase
 
                 // If that was the last half in the burst, signal burst_done and go idle
@@ -453,7 +462,7 @@ always @(posedge clk) begin
             rmw_issued <= rmw_issued + 2'd1;
         end
 
-        if ((cycle >= (T_RCD + CAS + 1)) && (rmw_received < rmw_issued)) begin
+        if ((cycle >= (T_RCD + CAS + 2)) && (rmw_received < rmw_issued)) begin
             automatic reg       half_sel;
             automatic reg [31:0] old_word;
             half_sel = (rmw_read_halfs == 2'b10) ? 1'b1 :
@@ -462,9 +471,9 @@ always @(posedge clk) begin
             old_word = rmw_old_data;
 
             if (!half_sel) begin
-                old_word[15:0] = dq_in;
+                old_word[15:0] = dq_r;
             end else begin
-                old_word[31:16] = dq_in;
+                old_word[31:16] = dq_r;
             end
 
             rmw_old_data <= old_word;
