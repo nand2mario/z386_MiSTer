@@ -98,5 +98,11 @@ private:
     int cnt_ = 0;
     uint8_t irq_pending_ = 0;
     bool bus_cooldown_ = false;
+    int  jitter_delay_ = 0;     // extra idle cycles after a bus op (disk-latency jitter)
     bool debug_ = false;
 };
+
+// Enable/seed deterministic HPS disk-latency jitter (vary img_ack/data-ready
+// timing like the real HPS, to expose timing-dependent races in the core's
+// disk handshake).  seed=0 disables.
+void hps_ide_set_jitter(bool en, uint32_t seed);

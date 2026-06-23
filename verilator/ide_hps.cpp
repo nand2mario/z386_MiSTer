@@ -438,6 +438,22 @@ void HpsIde::handle_cmd() {
     }
 }
 
+// --- deterministic HPS disk-latency jitter ---------------------------------
+// Vary the cycles between IDE bus ops (and thus data-ready / IRQ timing) like
+// the real HPS, to expose timing-dependent races in the core's disk handshake.
+static bool     g_jitter_en    = false;
+static uint32_t g_jitter_state = 1;
+void hps_ide_set_jitter(bool en, uint32_t seed) {
+    g_jitter_en = en;
+    g_jitter_state = seed ? seed : 1u;
+}
+static int jitter_next() {                 // xorshift32 -> 0..63 extra idle cycles
+    uint32_t x = g_jitter_state;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    g_jitter_state = x;
+    return (int)(x & 0x3F);
+}
+
 void HpsIde::tick(Vz386_mister_sim& tb) {
     clear_bus(tb);
 
@@ -446,12 +462,18 @@ void HpsIde::tick(Vz386_mister_sim& tb) {
         regs_ = HpsIdeRegs{};
         regs_.status = ATA_STATUS_RDY;
         bus_cooldown_ = false;
+        jitter_delay_ = 0;
         next_state_ = IDLE;
         return;
     }
 
     if (bus_cooldown_) {
         bus_cooldown_ = false;
+        return;
+    }
+
+    if (jitter_delay_ > 0) {               // hold the HPS idle for a variable spell
+        jitter_delay_--;
         return;
     }
 
@@ -688,5 +710,6 @@ void HpsIde::tick(Vz386_mister_sim& tb) {
 
     if (tb.mgmt_read || tb.mgmt_write) {
         bus_cooldown_ = true;
+        if (g_jitter_en) jitter_delay_ = jitter_next();
     }
 }

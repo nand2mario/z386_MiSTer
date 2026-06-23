@@ -726,6 +726,8 @@ int main(int argc, char** argv) {
 			max_cycles = std::stoull(argv[++i]);
 		} else if (arg == "--disk" && i + 1 < argc) {
 			disk_path = argv[++i];
+		} else if (arg == "--jitter" && i + 1 < argc) {
+			hps_ide_set_jitter(true, (uint32_t)std::stoul(argv[++i]));
 		} else if (arg == "--floppy" && i + 1 < argc) {
 			floppy_path = argv[++i];
 		} else if (arg == "--boot0" && i + 1 < argc) {
