@@ -136,6 +136,12 @@ localparam CONF_STR = {
 	"P2-;",
 	"P2o6,IDE 1-0 CD Hot-Swap,Yes,No;",
 	"P2o7,IDE 1-1 CD Hot-Swap,No,Yes;",
+    "P2-;",
+    "P2OCD,Joystick Type,2 Buttons,4 Buttons,Gravis Pro,None;",
+    "P2oFG,Joystick Mode,2 Joysticks,2 Sticks,2 Wheels,4-axes Wheel;",
+    "P2oQR,Joystick Axes,Timed,Count 8+141,Count 0+256,Count 6+256;",
+    "P2oH,Joystick 1,Enabled,Disabled;",
+    "P2oI,Joystick 2,Enabled,Disabled;",
 	"-;",
 	"R0,Reset and apply HDD;"
 };
@@ -263,6 +269,75 @@ wire [8:0]  spinner_2;
 wire [8:0]  spinner_3;
 wire [8:0]  spinner_4;
 wire [8:0]  spinner_5;
+
+// PC gameport joystick mapping, based on ao486.
+reg  [1:0]  joystick_dis;
+wire [13:0] joystick_dig_1;
+wire [13:0] joystick_dig_2;
+wire [15:0] joystick_ana_1;
+wire [15:0] joystick_ana_2;
+wire [1:0]  joystick_mode;
+wire [1:0]  joystick_timed;
+
+reg  [7:0]  ja_1x;
+reg  [7:0]  ja_1y;
+reg  [7:0]  ja_2x;
+reg  [7:0]  ja_2y;
+reg  [13:0] dig_mask;
+
+always @(*) begin
+    ja_1x = joystick_l_analog_0[7:0];
+    ja_1y = joystick_l_analog_0[15:8];
+    ja_2x = joystick_l_analog_1[7:0];
+    ja_2y = joystick_l_analog_1[15:8];
+
+    dig_mask = 14'h3FFF;
+    joystick_dis = status[50:49];
+
+    case (status[48:47])
+        2'd1: begin
+            // 2 Sticks: use player 1 right stick as joystick 2 axes.
+            ja_2x = joystick_r_analog_0[7:0];
+            ja_2y = joystick_r_analog_0[15:8];
+            joystick_dis[1] = status[49];
+        end
+
+        2'd2: begin
+            // 2 Wheels: combine left/right pedal axes and mask digital directions.
+            ja_1y = 8'd0;
+            if (joystick_l_analog_0[15]) ja_1y = joystick_l_analog_0[15:8];
+            if (joystick_r_analog_0[15]) ja_1y = ja_1y - joystick_r_analog_0[15:8];
+
+            ja_2y = 8'd0;
+            if (joystick_l_analog_1[15]) ja_2y = joystick_l_analog_1[15:8];
+            if (joystick_r_analog_1[15]) ja_2y = ja_2y - joystick_r_analog_1[15:8];
+
+            dig_mask[3:0] = 4'd0;
+        end
+
+        2'd3: begin
+            // 4-axes Wheel: use right stick for extra axes and mask digital directions.
+            ja_1y = joystick_l_analog_0[15] ? {joystick_l_analog_0[14:8] + 7'd63, 1'b0} : 8'd127;
+            ja_2y = joystick_r_analog_0[15] ? {joystick_r_analog_0[14:8] + 7'd63, 1'b0} : 8'd127;
+            ja_2x = joystick_r_analog_0[7]  ? {joystick_r_analog_0[6:0]  + 7'd63, 1'b0} : 8'd127;
+
+            dig_mask[3:0] = 4'd0;
+            joystick_dis[1] = status[49];
+        end
+
+        default: begin
+            // 2 Joysticks.
+        end
+    endcase
+end
+
+assign joystick_dig_1  = joystick_0[13:0] & dig_mask;
+assign joystick_dig_2  = status[47] ? 14'd0 : (joystick_1[13:0] & dig_mask);
+assign joystick_ana_1  = {ja_1y, ja_1x};
+assign joystick_ana_2  = {ja_2y, ja_2x};
+assign joystick_mode   = status[13:12];
+assign joystick_timed  = status[59:58];
+
 wire        forced_scandoubler;
 wire        direct_video;
 wire        ioctl_download;
@@ -466,6 +541,13 @@ system #(
 	.ide0_request        (mgmt_req[2:0]),
 	.ide1_request        (mgmt_req[5:3]),
 	.floppy_wp           (status[2:1]),
+	.joystick_dis        (joystick_dis),
+	.joystick_dig_1      (joystick_dig_1),
+	.joystick_dig_2      (joystick_dig_2),
+	.joystick_ana_1      (joystick_ana_1),
+	.joystick_ana_2      (joystick_ana_2),
+	.joystick_mode       (joystick_mode),
+	.joystick_timed      (joystick_timed),
 
 	.mgmt_address        (mgmt_addr),
 	.mgmt_read           (mgmt_rd),

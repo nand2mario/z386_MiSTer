@@ -10,6 +10,13 @@ module system (
 	output [2:0]  ide0_request,
 	output [2:0]  ide1_request,
 	input  [1:0]  floppy_wp,
+	input   [1:0] joystick_dis,
+	input  [13:0] joystick_dig_1,
+	input  [13:0] joystick_dig_2,
+	input  [15:0] joystick_ana_1,
+	input  [15:0] joystick_ana_2,
+	input   [1:0] joystick_mode,
+	input   [1:0] joystick_timed,
 
     input  [15:0] mgmt_address,
     input         mgmt_read,
@@ -685,6 +692,7 @@ wire [7:0] iobus_readdata8 =
 	( ps2_io_cs|ps2_ctl_cs                   ) ? ps2_readdata      :
 	( rtc_cs                                 ) ? rtc_readdata      :
 	( sb_cs|fm_cs                            ) ? sound_readdata    :
+	( joy_cs                                 ) ? joystick_readdata :
 	( vga_b_cs|vga_c_cs|vga_d_cs             ) ? vga_io_readdata   :
 	( sysctl_cs                              ) ? 8'hE9             :
 	                                             8'hFF;
@@ -726,6 +734,7 @@ iobus_adapter iobus_adapter (
 always @(*) begin
 	ide0_cs       = ({iobus_address[15:3], 3'd0} == 16'h01F0) || ({iobus_address[15:0]} == 16'h03F6);
 	ide1_cs       = ({iobus_address[15:3], 3'd0} == 16'h0170) || ({iobus_address[15:0]} == 16'h0376);
+	joy_cs        = ({iobus_address[15:0]      } == 16'h0201);
 	floppy0_cs    = ({iobus_address[15:2], 2'd0} == 16'h03F0) || ({iobus_address[15:1], 1'd0} == 16'h03F4) || ({iobus_address[15:0]} == 16'h03F7) ;
 	dma_master_cs = ({iobus_address[15:5], 5'd0} == 16'h00C0);
 	dma_page_cs   = ({iobus_address[15:4], 4'd0} == 16'h0080);
@@ -846,6 +855,28 @@ floppy floppy
 
 	.request           (fdd_request),
 	.irq               (irq_6)
+);
+
+
+// PC gameport / joystick interface at I/O port 201h.
+// Derived from ao486 joystick module.
+joystick joystick
+(
+    .rst_n             (~rst[0]),
+    .clk               (clk_sys),
+    .clock_rate        (clock_rate),
+
+    .read              (iobus_read & joy_cs),
+    .write             (iobus_write & joy_cs),
+    .readdata          (joystick_readdata),
+
+    .dis               (joystick_dis),
+    .dig_1             (joystick_dig_1),
+    .dig_2             (joystick_dig_2),
+    .ana_1             (joystick_ana_1),
+    .ana_2             (joystick_ana_2),
+    .mode              (joystick_mode),
+    .timed             (joystick_timed)
 );
 
 // IDE address: byte-sequential adapter provides 8-bit access via iobus_address,
