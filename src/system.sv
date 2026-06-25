@@ -83,6 +83,7 @@ module system (
     // Debug stream up to UART bridge
     output  [7:0] dbg_uart_byte,
     output        dbg_uart_we,
+    output        mpu_uart_tx,
 
     // SignalTap anchors for the boot-ROM / reset-vector path.
     output [31:0] dbg_sd_avm_address,
@@ -685,6 +686,7 @@ wire [7:0] iobus_readdata8 =
 	( ps2_io_cs|ps2_ctl_cs                   ) ? ps2_readdata      :
 	( rtc_cs                                 ) ? rtc_readdata      :
 	( sb_cs|fm_cs                            ) ? sound_readdata    :
+	( mpu_cs                                 ) ? mpu_readdata      :
 	( vga_b_cs|vga_c_cs|vga_d_cs             ) ? vga_io_readdata   :
 	( sysctl_cs                              ) ? 8'hE9             :
 	                                             8'hFF;
@@ -738,6 +740,9 @@ always @(*) begin
 	rtc_cs        = ({iobus_address[15:1], 1'd0} == 16'h0070);
 	fm_cs         = ({iobus_address[15:2], 2'd0} == 16'h0388);
 	sb_cs         = ({iobus_address[15:4], 4'd0} == 16'h0220);
+	uart1_cs      = ({iobus_address[15:3], 3'd0} == 16'h03F8); // COM1
+	uart2_cs      = ({iobus_address[15:3], 3'd0} == 16'h02F8); // COM2
+	mpu_cs        = ({iobus_address[15:1], 1'd0} == 16'h0330); // MPU-401 330/331
 	vga_b_cs      = ({iobus_address[15:4], 4'd0} == 16'h03B0);
 	vga_c_cs      = ({iobus_address[15:4], 4'd0} == 16'h03C0);
 	vga_d_cs      = ({iobus_address[15:4], 4'd0} == 16'h03D0);
@@ -1496,6 +1501,95 @@ always @(posedge clk_sys) begin
         end
     end
 end
+
+
+// -----------------------------------------------------------------------------
+// Minimal MPU-401 UART/dumb mode output.
+// Writes to port 330h are serialized to MiSTer HPS UART/MidiLink.
+// Port 331h is treated as MPU command/status.
+// This is not full intelligent MPU-401; it is enough for basic UART-mode MIDI.
+// -----------------------------------------------------------------------------
+
+reg  [7:0] mpu_fifo [0:255];
+reg  [7:0] mpu_fifo_wr;
+reg  [7:0] mpu_fifo_rd;
+reg  [8:0] mpu_fifo_count;
+
+reg  [7:0] mpu_tx_data;
+reg        mpu_tx_wr;
+wire       mpu_tx_busy;
+
+reg        mpu_ack_pending;
+
+wire       mpu_fifo_full  = (mpu_fifo_count == 9'd256);
+wire       mpu_fifo_empty = (mpu_fifo_count == 9'd0);
+
+wire       mpu_data_write = iobus_write && mpu_cs && !iobus_address[0] && !mpu_fifo_full;
+wire       mpu_cmd_write  = iobus_write && mpu_cs &&  iobus_address[0];
+wire       mpu_data_read  = iobus_read  && mpu_cs && !iobus_address[0];
+wire       mpu_dequeue    = !mpu_tx_busy && !mpu_fifo_empty && !mpu_tx_wr;
+
+// MPU status register at 331h:
+// bit 7 = 0: ACK/data available to host
+// bit 7 = 1: no data available
+// bit 6 = 0: ready to accept command/data
+// bit 6 = 1: FIFO full
+assign mpu_readdata = iobus_address[0]
+                    ? (mpu_ack_pending ? 8'h00 : (mpu_fifo_full ? 8'hC0 : 8'h80))
+                    : 8'hFE;
+
+always @(posedge clk_sys) begin
+    mpu_tx_wr <= 1'b0;
+
+    if (reset) begin
+        mpu_fifo_wr     <= 8'd0;
+        mpu_fifo_rd     <= 8'd0;
+        mpu_fifo_count  <= 9'd0;
+        mpu_tx_data     <= 8'd0;
+        mpu_ack_pending <= 1'b0;
+    end else begin
+        // Port 331h: MPU command. Return generic ACK 0xFE on port 330h.
+        if (mpu_cmd_write) begin
+            mpu_ack_pending <= 1'b1;
+        end
+
+        // Port 330h read consumes ACK.
+        if (mpu_data_read && mpu_ack_pending) begin
+            mpu_ack_pending <= 1'b0;
+        end
+
+        // Port 330h write: MIDI data byte.
+        if (mpu_data_write) begin
+            mpu_fifo[mpu_fifo_wr] <= iobus_writedata_byte;
+            mpu_fifo_wr <= mpu_fifo_wr + 8'd1;
+        end
+
+        // Serialize FIFO to UART.
+        if (mpu_dequeue) begin
+            mpu_tx_data <= mpu_fifo[mpu_fifo_rd];
+            mpu_fifo_rd <= mpu_fifo_rd + 8'd1;
+            mpu_tx_wr   <= 1'b1;
+        end
+
+        case ({mpu_data_write, mpu_dequeue})
+            2'b10: mpu_fifo_count <= mpu_fifo_count + 9'd1;
+            2'b01: mpu_fifo_count <= mpu_fifo_count - 9'd1;
+            default: mpu_fifo_count <= mpu_fifo_count;
+        endcase
+    end
+end
+
+uart_tx_V2 mpu_uart_tx_i
+(
+    .clk      (clk_sys),
+    .din      (mpu_tx_data),
+    .wr_en    (mpu_tx_wr),
+    .tx_busy  (mpu_tx_busy),
+    .tx_p     (mpu_uart_tx)
+);
+
+defparam mpu_uart_tx_i.clk_freq  = SYS_FREQ;
+defparam mpu_uart_tx_i.uart_freq = 31250;
 
 // Export debug byte for UART bridge to wrap as type 0x07
 wire bios_dbg_write = iobus_write && sysctl_cs;
