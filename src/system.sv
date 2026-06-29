@@ -132,6 +132,7 @@ module system (
 	output wire [7:0]  video_r,
 	output wire [7:0]  video_g,
 	output wire [7:0]  video_b,
+	input              video_border,	// show VGA overscan border (OSD)
 
 	input         clk_audio,		// 24.576Mhz
 	output  [8:0] sample_cms_l,
@@ -1177,7 +1178,7 @@ vga vga_inst
 	.vga_stride        (video_stride_unused),
 	.vga_off           (video_off_unused),
 	.vga_lores         (1'b0),
-	.vga_border        (1'b0)
+	.vga_border        (video_border)
 );
 
 

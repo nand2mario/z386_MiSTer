@@ -121,6 +121,7 @@ localparam CONF_STR = {
 	"P1,Audio & Video;",
 	"P1-;",
 	"P1OMN,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"P1oN,Border,No,Yes;",
 	"P1-;",
 	"P1O3,FM mode,OPL2,OPL3;",
 	"P1OH,C/MS,Disable,Enable;",
@@ -652,6 +653,7 @@ system #(
 	.video_r             (core_r),
 	.video_g             (core_g),
 	.video_b             (core_b),
+	.video_border        (status[55]),   // OSD "Border" (oN); z386 has no framebuffer path
 
 	.clk_audio           (CLK_AUDIO),
 	.sample_cms_l        (sample_cms_l),
