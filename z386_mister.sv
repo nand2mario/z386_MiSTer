@@ -131,6 +131,8 @@ localparam CONF_STR = {
 	"P1oO,SB Swap L/R,Off,On;",
 	"-;",
 	"P2,Hardware;",
+	"P2oDE,RAM Size,16MB,32MB,64MB,128MB;",
+	"P2-;",
 	"P2o01,Boot 1st,Floppy/Hard Disk,Floppy,Hard Disk,CD-ROM;",
 	"P2o23,Boot 2nd,NONE,Floppy,Hard Disk,CD-ROM;",
 	"P2o45,Boot 3rd,NONE,Floppy,Hard Disk,CD-ROM;",
