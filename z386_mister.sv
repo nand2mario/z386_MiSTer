@@ -516,9 +516,9 @@ hps_ext hps_ext
     .ext_rd            (mgmt_rd),
     .ext_wr            (mgmt_wr),
 
-    .cdda_req          (1'b0),
-    .cdda_wr           (),
-    .cdda_dout         (),
+    .cdda_req          (cdda_req),
+    .cdda_wr           (cdda_wr),
+    .cdda_dout         (cdda_dout),
 
     .ext_midi          (),
     .ext_req           (mgmt_req),
@@ -705,12 +705,37 @@ always @(posedge CLK_AUDIO) begin
 	spk_out <= spk >> ~vol_spk;
 end
 
+// CD-DA (Redbook CD audio): the HPS streams audio sectors via hps_ext when
+// cdda_req is asserted; cdda buffers them and resamples to 44.1 kHz. Real CD
+// volume (vol_cd) is applied in sb_volume below, so the module's own VOLUME is
+// left at full scale (matches ao486).
+wire        cdda_req;
+wire        cdda_wr;
+wire [31:0] cdda_dout;
+wire [15:0] cdda_l;
+wire [15:0] cdda_r;
+
+cdda #(24576000) cdda_inst
+(
+	.CLK       (clk_sys),
+	.CDDA_REQ  (cdda_req),
+	.CDDA_WR   (cdda_wr),
+	.CDDA_DATA (cdda_dout),
+	.VOLUME_L  (4'b1111),
+	.VOLUME_R  (4'b1111),
+	.CLK_AUDIO (CLK_AUDIO),
+	.AUDIO_L   (cdda_l),
+	.AUDIO_R   (cdda_r)
+);
+
 wire [15:0] master_l;
 wire [15:0] master_r;
 wire [15:0] sb_l;
 wire [15:0] sb_r;
 wire [15:0] opl_l;
 wire [15:0] opl_r;
+wire [15:0] cd_l;
+wire [15:0] cd_r;
 wire        sb_volume_valid;
 wire [15:0] mix_cmp_l;
 wire [15:0] mix_cmp_r;
@@ -720,18 +745,21 @@ wire [15:0] mix_pre_r = status[21:20] ? mix_cmp_r : mix_dry_r;
 acompr acompr_l(CLK_AUDIO, status[21], mix_dry_l, mix_cmp_l);
 acompr acompr_r(CLK_AUDIO, status[21], mix_dry_r, mix_cmp_r);
 
-sb_volume #(.NUM_CH(6), .SAMPLE_WIDTH(16)) sb_volume_inst (
+sb_volume #(.NUM_CH(8), .SAMPLE_WIDTH(16)) sb_volume_inst (
 	.clk(CLK_AUDIO),
 	.sbp(sbp),
 	.volumes_in({vol_master_l, vol_master_r,
 	             vol_voice_l,  vol_voice_r,
-	             vol_midi_l,   vol_midi_r}),
+	             vol_midi_l,   vol_midi_r,
+	             vol_cd_l,     vol_cd_r}),
 	.samples_in({mix_pre_l,    mix_pre_r,
 	             sample_sb_l,  sample_sb_r,
-	             sample_opl_l, sample_opl_r}),
+	             sample_opl_l, sample_opl_r,
+	             cdda_l,       cdda_r}),
 	.samples_out({master_l, master_r,
 	              sb_l,     sb_r,
-	              opl_l,    opl_r}),
+	              opl_l,    opl_r,
+	              cd_l,     cd_r}),
 	.valid(sb_volume_valid)
 );
 
@@ -746,11 +774,13 @@ always @(posedge CLK_AUDIO) begin
 		mix_tmp_l <= spk_out
 		           + {2'b00, sample_cms_l, sample_cms_l[8:4]}
 		           + {sb_l_swap[15], sb_l_swap}
-		           + {opl_l[15], opl_l};
+		           + {opl_l[15], opl_l}
+		           + (vol_en[2] ? {cd_l[15], cd_l} : 17'd0);  // CD-DA (Redbook audio)
 		mix_tmp_r <= spk_out
 		           + {2'b00, sample_cms_r, sample_cms_r[8:4]}
 		           + {sb_r_swap[15], sb_r_swap}
-		           + {opl_r[15], opl_r};
+		           + {opl_r[15], opl_r}
+		           + (vol_en[1] ? {cd_r[15], cd_r} : 17'd0);
 	end
 
 	mix_dry_l <= (^mix_tmp_l[16:15]) ? {mix_tmp_l[16], {15{mix_tmp_l[15]}}} : mix_tmp_l[15:0];
