@@ -1,7 +1,7 @@
 // IO Bus Adapter: z386 IO bus → byte-sequential peripheral IO bus
 //
 // z386 IO cycles can be 1-4 bytes (indicated by be[3:0]).
-// ao486 peripherals are 8-bit (except IDE data port 0x1F0 which is 32-bit).
+// ao486 peripherals are 8-bit (except the IDE data ports 0x1F0/0x170, 32-bit).
 // This FSM iterates through active byte enables, issues sequential peripheral
 // reads/writes, assembles/distributes data, then asserts ready.
 //
@@ -81,8 +81,11 @@ reg        was_active;   // Guard: prevent re-triggering until CPU deasserts IO 
 // Combinational: port address
 wire [15:0] base_port = {cpu_addr, 2'b00};
 
-// IDE data port detection: port 0x1F0 only when byte lane 0 is active
-wire ide_data_port = (base_port == 16'h01F0) && cpu_be[0];
+// IDE data port detection: primary 0x1F0 or secondary 0x170 (CD-ROM/ATAPI),
+// only when byte lane 0 is active. The secondary data port must take the wide
+// (16/32-bit) IDE path too, otherwise INSW/OUTSW on 0x170 would fall into the
+// byte FSM and read 0x170 then 0x171 (data low + error reg) -> garbage.
+wire ide_data_port = ((base_port == 16'h01F0) || (base_port == 16'h0170)) && cpu_be[0];
 
 always @(posedge clk) begin
     if (!reset_n) begin
