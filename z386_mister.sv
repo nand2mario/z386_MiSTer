@@ -107,7 +107,7 @@ localparam DCACHE_SET_BITS = 8;   // dcache size: 8 = 16KB, 7 = 8KB (4 ways x 16
 localparam ICACHE_SET_BITS = 8;   // icache size: 8 = 16KB, 7 = 8KB
 
 localparam CONF_STR = {
-	"Z386;UART115200;",
+	"Z386;UART115200:4000000 (Turbo 115200),MIDI;",
 	"S0,IMGIMAVFD,Floppy A:;",
 	"S1,IMGIMAVFD,Floppy B:;",
 	"O12,Write Protect,None,A:,B:,A: & B:;",
@@ -356,6 +356,7 @@ wire [7:0]  uart_mode;
 wire [31:0] uart_speed;
 wire        debug_uart_tx;
 wire        debug_uart_busy;
+wire        mpu_uart_tx;
 reg   [7:0] debug_uart_data;
 reg         debug_uart_wr;
 reg   [7:0] debug_uart_fifo [0:255];
@@ -614,6 +615,7 @@ system #(
 
 	.dbg_uart_byte       (core_dbg_uart_byte),
 	.dbg_uart_we         (core_dbg_uart_we),
+   .mpu_uart_tx         (mpu_uart_tx),
 	.dbg_sd_avm_address  (),
 	.dbg_sd_avm_writedata(),
 	.dbg_sd_avm_write    (),
@@ -945,8 +947,10 @@ assign SD_CS         = 1'bz;
 assign DDRAM_CLK     = clk_sys;
 assign SDRAM_CLK     = clk_sdram;
 
+wire uart_midi_mode = (uart_mode != 8'd0);
+
 assign UART_RTS      = 1'b0;
-assign UART_TXD      = debug_uart_tx;
+assign UART_TXD      = uart_midi_mode ? mpu_uart_tx : debug_uart_tx;
 assign UART_DTR      = 1'b0;
 assign USER_OUT      = 7'h7F;
 
