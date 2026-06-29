@@ -53,6 +53,9 @@ set_global_assignment -name SEED 6
 # END build_profile.py settings
 set_global_assignment -name VERILOG_MACRO "Z386_QUARTUS_M10K_UCODE=1"
 set_global_assignment -name VERILOG_MACRO "Z386_ALTERA_ALU=1"
+# SVGA framebuffer (mode 0x101 etc.): HPS framebuffer scaler reads the DDR3 FB
+set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+set_global_assignment -name VERILOG_MACRO "MISTER_FB_PALETTE=1"
 
 source sys/sys.tcl
 set_global_assignment -name FAMILY "Cyclone V"
@@ -318,6 +321,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
 
 
 # --- TNS floorplan experiment: legacy LogicLock region for the CPU (BRAM-light)
+
+
+
 
 
 

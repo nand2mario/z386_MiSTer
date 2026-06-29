@@ -102,9 +102,9 @@ module emu
 	input         OSD_STATUS
 );
 
-localparam CLOCK_RATE_HZ = 85_000_000;
-localparam DCACHE_SET_BITS = 8;   // dcache size: 8 = 16KB, 7 = 8KB (4 ways x 16B/line)
-localparam ICACHE_SET_BITS = 8;   // icache size: 8 = 16KB, 7 = 8KB
+localparam CLOCK_RATE_HZ = 50_000_000;
+localparam DCACHE_SET_BITS = 7;   // dcache size: 8 = 16KB, 7 = 8KB (4 ways x 16B/line)
+localparam ICACHE_SET_BITS = 7;   // icache size: 8 = 16KB, 7 = 8KB
 
 localparam CONF_STR = {
 	"Z386;UART115200:4000000 (Turbo 115200),MIDI;",
@@ -178,6 +178,16 @@ wire  [7:0] core_b;
 wire        core_hs;
 wire        core_vs;
 wire        core_de;
+// SVGA framebuffer descriptor from vga.v (via system) -> MiSTer HPS framebuffer
+wire [19:0] vga_start_addr;
+wire  [8:0] vga_width;
+wire [10:0] vga_height;
+wire  [8:0] vga_stride;
+wire  [3:0] vga_flags;
+wire        vga_off;
+wire  [7:0] vga_pal_a;
+wire [17:0] vga_pal_d;
+wire        vga_pal_we;
 wire  [7:0] clean_r;
 wire  [7:0] clean_g;
 wire  [7:0] clean_b;
@@ -655,7 +665,18 @@ system #(
 	.video_r             (core_r),
 	.video_g             (core_g),
 	.video_b             (core_b),
-	.video_border        (status[55]),   // OSD "Border" (oN); z386 has no framebuffer path
+	.video_border        (status[55]),   // OSD "Border" (oN)
+
+	// SVGA framebuffer descriptor (vga.v) -> MiSTer HPS framebuffer (below)
+	.video_start_addr    (vga_start_addr),
+	.video_width         (vga_width),
+	.video_height        (vga_height),
+	.video_stride        (vga_stride),
+	.video_flags         (vga_flags),
+	.video_off           (vga_off),
+	.video_pal_a         (vga_pal_a),
+	.video_pal_d         (vga_pal_d),
+	.video_pal_we        (vga_pal_we),
 
 	.clk_audio           (CLK_AUDIO),
 	.sample_cms_l        (sample_cms_l),
@@ -947,18 +968,40 @@ assign HDMI_FREEZE   = 1'b0;
 assign HDMI_BLACKOUT = 1'b0;
 assign HDMI_BOB_DEINT = 1'b0;
 `ifdef MISTER_FB
-assign FB_EN         = 1'b0;
-assign FB_FORMAT     = 5'd0;
-assign FB_WIDTH      = 12'd0;
-assign FB_HEIGHT     = 12'd0;
-assign FB_BASE       = 32'd0;
-assign FB_STRIDE     = 14'd0;
-assign FB_FORCE_BLANK = 1'b0;
+// SVGA framebuffer: ET4000 linear hi-depth modes (8/16/24/32bpp, incl. mode 0x101
+// 640x480x256) set vga_flags[1:0]!=0 with PELWIDTH(=vga_flags[2])=0, so fb_en=1 and
+// pixels are read from DDR3 by the HPS scaler. Mapping mirrors ao486.sv. The CPU's
+// DDR3 framebuffer WRITE path (the 0xA0000 banked window) is step 1; until then the
+// descriptor is wired but the FB region is unwritten.
+reg         fb_en;
+reg  [31:0] fb_base;
+reg  [11:0] fb_width;
+reg  [11:0] fb_height;
+reg  [13:0] fb_stride;
+reg   [4:0] fb_fmt;
+reg         fb_off;
+always @(posedge clk_sys) begin
+	fb_en       <= ~vga_flags[2] && |vga_flags[1:0];
+	fb_base     <= {4'h3, 6'b111110, vga_start_addr, 2'b00};
+	fb_width    <= (vga_flags[1:0] == 2'd3) ? 12'd640 : vga_flags[2] ? {vga_width, 2'b00} : {vga_width, 3'b000};
+	fb_stride   <= {vga_stride, 3'b000};
+	fb_height   <= vga_flags[3] ? {2'b0, vga_height[10:1]} : {1'b0, vga_height};   // undo vertical doublescan
+	fb_fmt[2:0] <= (vga_flags[1:0] == 2'd3) ? 3'b101 : (vga_flags[1:0] == 2'd2) ? 3'b100 : 3'b011; // 011=8bpp 100=16bpp 101=24bpp
+	fb_fmt[4:3] <= 2'b00;   // [4]=RGB (BGR only applies to 16/24/32bpp; no OSD toggle yet)
+	fb_off      <= vga_off;
+end
+assign FB_EN          = fb_en;
+assign FB_FORMAT      = fb_fmt;
+assign FB_WIDTH       = fb_width;
+assign FB_HEIGHT      = fb_height;
+assign FB_BASE        = fb_base;
+assign FB_STRIDE      = fb_stride;
+assign FB_FORCE_BLANK = fb_off;
 `ifdef MISTER_FB_PALETTE
-assign FB_PAL_CLK    = 1'b0;
-assign FB_PAL_ADDR   = 8'd0;
-assign FB_PAL_DOUT   = 24'd0;
-assign FB_PAL_WR     = 1'b0;
+assign FB_PAL_CLK    = clk_sys;
+assign FB_PAL_ADDR   = vga_pal_a;
+assign FB_PAL_DOUT   = {vga_pal_d[17:12], vga_pal_d[17:16], vga_pal_d[11:6], vga_pal_d[11:10], vga_pal_d[5:0], vga_pal_d[5:4]};
+assign FB_PAL_WR     = vga_pal_we;
 `endif
 `endif
 

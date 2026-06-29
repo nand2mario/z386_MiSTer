@@ -134,6 +134,17 @@ module system (
 	output wire [7:0]  video_b,
 	input              video_border,	// show VGA overscan border (OSD)
 
+	// SVGA framebuffer descriptor (from vga.v) -> MiSTer HPS framebuffer path
+	output wire [19:0] video_start_addr,
+	output wire  [8:0] video_width,
+	output wire [10:0] video_height,
+	output wire  [8:0] video_stride,
+	output wire  [3:0] video_flags,
+	output wire        video_off,
+	output wire  [7:0] video_pal_a,
+	output wire [17:0] video_pal_d,
+	output wire        video_pal_we,
+
 	input         clk_audio,		// 24.576Mhz
 	output  [8:0] sample_cms_l,
 	output  [8:0] sample_cms_r,
@@ -389,15 +400,7 @@ wire        vga_write;
 wire  [2:0] vga_memmode;
 wire  [5:0] video_wr_seg;
 wire  [5:0] video_rd_seg;
-wire  [7:0] video_pal_a_unused;
-wire [17:0] video_pal_d_unused;
-wire        video_pal_we_unused;
-wire [19:0] video_start_addr_unused;
-wire  [8:0] video_width_unused;
-wire [10:0] video_height_unused;
-wire  [3:0] video_flags_unused;
-wire  [8:0] video_stride_unused;
-wire        video_off_unused;
+// SVGA framebuffer descriptor wires (video_*) are now module outputs.
 
 // ============================================================================
 // z386 CPU
@@ -522,6 +525,16 @@ assign mm_burstcount = boot_done ? cpu_burstcount    : 8'd1;
 assign mm_valid      = boot_done ? avm_valid         : sd_avm_write;
 assign mm_write      = boot_done ? avm_write         : 1'b1;
 
+// SVGA framebuffer: enable + DDR3 write port (from main_memory, muxed onto ddram below).
+// fb_en = ET4000 linear hi-depth (8/16/24/32bpp), i.e. ~PELWIDTH & depth>0.
+wire        vga_fb_en = ~video_flags[2] && |video_flags[1:0];
+wire [28:0] fb_ddram_addr;
+wire [63:0] fb_ddram_din;
+wire  [7:0] fb_ddram_be;
+wire        fb_ddram_we;
+wire        fb_ddram_rd;
+wire  [7:0] fb_ddram_burstcnt;
+
 // Main memory (SDRAM + VGA hole)
 main_memory main_memory (
     .clk               (clk_sys),
@@ -557,8 +570,19 @@ main_memory main_memory (
 	.vga_memmode       (vga_memmode),
 	.vga_wr_seg        (video_wr_seg),
 	.vga_rd_seg        (video_rd_seg),
-	.vga_fb_en         (1'b0),          // unused with vga2 (was for DDR3 framebuffer)
-	.vga_wr_done       (vga_wr_done)
+	.vga_fb_en         (vga_fb_en),
+	.vga_wr_done       (vga_wr_done),
+
+	// DDR3 SVGA framebuffer read/write port (muxed onto ddram_* after boot)
+	.fb_ddram_addr        (fb_ddram_addr),
+	.fb_ddram_din         (fb_ddram_din),
+	.fb_ddram_be          (fb_ddram_be),
+	.fb_ddram_we          (fb_ddram_we),
+	.fb_ddram_rd          (fb_ddram_rd),
+	.fb_ddram_dout        (ddram_dout),
+	.fb_ddram_dout_ready  (ddram_dout_ready),
+	.fb_ddram_burstcnt    (fb_ddram_burstcnt),
+	.fb_ddram_busy        (ddram_busy)
 );
 
 // CPU → SDRAM port 0: main_memory holds signals stable until accepted
@@ -902,12 +926,14 @@ assign dbg_sd_avm_wait      = boot_done ? 1'b0 : (sd_avm_write && !mm_ready);
 assign dbg_sd_avm_accept    = sd_avm_write && !dbg_sd_avm_wait;
 assign ioctl_wait           = 1'b0;
 
-assign ddram_burstcnt       = 8'd1;
-assign ddram_addr           = {4'h3, boot_ddr_byte_addr[27:3]};
-assign ddram_rd             = ddram_rd_r;
-assign ddram_din            = 64'd0;
-assign ddram_be             = 8'hFF;
-assign ddram_we             = 1'b0;
+// ddram is time-shared: boot loader reads the RAM image (pre-boot), then the SVGA
+// framebuffer owns it for writes (post-boot). boot_done is the arbiter (mutually exclusive).
+assign ddram_burstcnt       = boot_done ? fb_ddram_burstcnt : 8'd1;
+assign ddram_addr           = boot_done ? fb_ddram_addr     : {4'h3, boot_ddr_byte_addr[27:3]};
+assign ddram_rd             = boot_done ? fb_ddram_rd        : ddram_rd_r;
+assign ddram_din            = boot_done ? fb_ddram_din      : 64'd0;
+assign ddram_be             = boot_done ? fb_ddram_be       : 8'hFF;
+assign ddram_we             = boot_done ? fb_ddram_we       : 1'b0;
 
 assign dbg_mm_addr          = mm_addr;
 assign dbg_mm_din           = mm_din;
@@ -1166,17 +1192,17 @@ vga vga_inst
 	.vga_b             (video_b),
 	.vga_f60           (1'b1),
 	.vga_memmode       (vga_memmode),
-	.vga_pal_a         (video_pal_a_unused),
-	.vga_pal_d         (video_pal_d_unused),
-	.vga_pal_we        (video_pal_we_unused),
-	.vga_start_addr    (video_start_addr_unused),
+	.vga_pal_a         (video_pal_a),
+	.vga_pal_d         (video_pal_d),
+	.vga_pal_we        (video_pal_we),
+	.vga_start_addr    (video_start_addr),
 	.vga_wr_seg        (video_wr_seg),
 	.vga_rd_seg        (video_rd_seg),
-	.vga_width         (video_width_unused),
-	.vga_height        (video_height_unused),
-	.vga_flags         (video_flags_unused),
-	.vga_stride        (video_stride_unused),
-	.vga_off           (video_off_unused),
+	.vga_width         (video_width),
+	.vga_height        (video_height),
+	.vga_flags         (video_flags),
+	.vga_stride        (video_stride),
+	.vga_off           (video_off),
 	.vga_lores         (1'b0),
 	.vga_border        (video_border)
 );

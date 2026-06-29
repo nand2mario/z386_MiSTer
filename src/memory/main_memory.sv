@@ -36,7 +36,19 @@ module main_memory (
     input      [5:0]  vga_rd_seg,
     input             vga_fb_en,
 
-    output reg        vga_wr_done     // pulses 1 cycle when VGA write completes
+    output reg        vga_wr_done,    // pulses 1 cycle when VGA write completes
+
+    // DDR3 SVGA framebuffer read/write port (used when vga_fb_en; post-boot).
+    // ET4000 linear address = bank(vga_wr_seg/rd_seg)*64KB + window offset.
+    output reg [28:0] fb_ddram_addr,
+    output reg [63:0] fb_ddram_din,
+    output reg  [7:0] fb_ddram_be,
+    output            fb_ddram_we,
+    output reg        fb_ddram_rd,
+    input      [63:0] fb_ddram_dout,
+    input             fb_ddram_dout_ready,
+    output     [7:0]  fb_ddram_burstcnt,
+    input             fb_ddram_busy
 );
 
 reg vga_busy;
@@ -61,6 +73,18 @@ logic [2:0] state;
 localparam IDLE = 0;
 localparam VGA_READ = 1;
 localparam VGA_WRITE = 2;
+localparam FB_WRITE = 3;
+localparam FB_READ  = 4;   // issue DDR3 read
+localparam FB_READ_WAIT = 5;   // await read data
+
+// DDR3 framebuffer write: assert WE while in FB_WRITE; accepted when ~busy.
+assign fb_ddram_we       = (state == FB_WRITE);
+assign fb_ddram_burstcnt = 8'd1;
+// SVGA framebuffer base in DDR3 = byte 0x3F80_0000 = {4'h3,6'b111110,22'h0},
+// matching FB_BASE = {4'h3,6'b111110,vga_start_addr,2'b00} in z386_mister.sv.
+// Linear byte address = base | (bank<<16) | window_offset[15:0].
+wire [31:0] fb_byte_addr    = 32'h3F80_0000 | {10'b0, vga_wr_seg, cpu_addr[15:0]};
+wire [31:0] fb_rd_byte_addr = 32'h3F80_0000 | {10'b0, vga_rd_seg, cpu_addr[15:0]};
 
 reg   [1:0] vga_mask;
 reg   [1:0] vga_cmp;
@@ -79,12 +103,17 @@ always @(posedge clk) begin
         vga_dout_ready <= 0;
         vga_dout <= 0;
         vga_accepted <= 0;
+        fb_ddram_addr <= 0;
+        fb_ddram_din <= 0;
+        fb_ddram_be <= 0;
+        fb_ddram_rd <= 0;
     end else begin
         vga_read <= 0;
         vga_write <= 0;
         vga_dout_ready <= 0;
         vga_wr_done <= 0;
         vga_accepted <= 0;
+        fb_ddram_rd <= 0;
         case (state)
             IDLE: begin
                 // set up vga access to point to 1st enabled byte
@@ -119,14 +148,45 @@ always @(posedge clk) begin
                     vga_accepted <= 1;
                     vga_busy <= 1;
                     if (!cpu_write) begin
-                        state <= VGA_READ;
-                        vga_read <= 1;
+                        if (vga_fb_en) begin
+                            // SVGA: read back from the DDR3 framebuffer (banked by vga_rd_seg)
+                            state <= FB_READ;
+                            fb_ddram_addr <= fb_rd_byte_addr[31:3];
+                        end else begin
+                            state <= VGA_READ;
+                            vga_read <= 1;
+                        end
+                    end else if (vga_fb_en) begin
+                        // SVGA: write into the DDR3 linear framebuffer (banked by vga_wr_seg)
+                        state <= FB_WRITE;
+                        fb_ddram_addr <= fb_byte_addr[31:3];
+                        fb_ddram_be   <= cpu_addr[2] ? {cpu_be, 4'b0}   : {4'b0,  cpu_be};
+                        fb_ddram_din  <= cpu_addr[2] ? {cpu_din, 32'b0} : {32'b0, cpu_din};
                     end else begin
                         state <= VGA_WRITE;
                         vga_write <= 1;
                     end
                 end
             end
+            FB_WRITE:
+                if (!fb_ddram_busy) begin   // DDR3 accepted the write
+                    vga_wr_done <= 1;
+                    state <= IDLE;
+                    vga_busy <= 0;
+                end
+            FB_READ:
+                if (!fb_ddram_busy) begin   // issue the read (1-cycle pulse)
+                    fb_ddram_rd <= 1;
+                    state <= FB_READ_WAIT;
+                end
+            FB_READ_WAIT:
+                if (fb_ddram_dout_ready) begin
+                    // CPU dword = high/low half of the 64-bit DDR3 word it addressed
+                    vga_dout <= cpu_addr[2] ? fb_ddram_dout[63:32] : fb_ddram_dout[31:0];
+                    vga_dout_ready <= 1;
+                    state <= IDLE;
+                    vga_busy <= 0;
+                end
             VGA_READ:
                 if (!vga_read) begin
                     vga_read <= vga_be[0];
