@@ -16,7 +16,7 @@ SOURCES = ../z386_mister_sim.sv \
 		  $(DZ)/dsp_mul.sv $(DZ)/protection.sv \
 		  $(D)/iobus_adapter.sv $(D)/pic_inta_bridge.sv \
 		  $(D)/memory/main_memory.sv $(D)/z386/l1_cache.sv $(D)/z386/l1_icache.sv $(D)/memory/sdram_sim.v \
-		  $(D)/soc/dma.v $(D)/soc/floppy.v $(D)/soc/ide.v $(D)/soc/pic.v $(D)/soc/pit_counter.v \
+		  $(D)/soc/dma.v $(D)/soc/cdda.v $(D)/soc/joystick.v $(D)/soc/floppy.v $(D)/soc/ide.v $(D)/soc/pic.v $(D)/soc/pit_counter.v \
 		  $(D)/soc/pit.v $(D)/soc/ps2.v $(D)/soc/rtc.v $(D)/soc/vga.v \
 		  $(D)/common/dpram.v $(D)/common/simple_ram.v $(D)/common/simple_fifo.v $(D)/common/async_fifo.v \
 		  $(D)/common/ps2_device.v $(D)/common/simple_mult.v $(D)/common/uart_tx_V2.v $(D)/common/synchronizer.sv \
