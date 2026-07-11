@@ -57,13 +57,14 @@ reg [27:0] clk_rate;
 always @(posedge clk) clk_rate <= clock_rate;
 
 reg ce_8192hz;
+reg [27:0] ce_8192hz_sum = 0;   // module scope: a block-local `automatic` accumulator
+                                // re-initializes to 0 every clock (Verilator, and per SV
+                                // semantics) so ce_8192hz never fired and the RTC froze.
 always @(posedge clk) begin
-	automatic reg [27:0] sum = 0;
-
 	ce_8192hz = 0;
-	sum = sum + 28'd8192;
-	if(sum >= clk_rate) begin
-		sum = sum - clk_rate;
+	ce_8192hz_sum = ce_8192hz_sum + 28'd8192;
+	if(ce_8192hz_sum >= clk_rate) begin
+		ce_8192hz_sum = ce_8192hz_sum - clk_rate;
 		ce_8192hz = 1;
 	end
 end

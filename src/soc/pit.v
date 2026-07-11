@@ -33,7 +33,7 @@ module pit(
 	//io slave 040h-043h / 61h
 	input       [2:0]   io_address,
 	input               io_read,
-	output      [7:0]   io_readdata,
+	output reg  [7:0]   io_readdata,
 	input               io_write,
 	input       [7:0]   io_writedata,
 
@@ -45,19 +45,30 @@ module pit(
 
 //------------------------------------------------------------------------------ system clock
 
-reg [27:0] clk_rate;
-always @(posedge clk) clk_rate <= clock_rate;
-
-reg ce_system_counter;
-reg [27:0] sum = 0;
+// PIT counter clock input frequency: 105/88 MHz = 1193181.81818... Hz
+// Accurate accumulator-based NCO for PIT frequency (restored to match ao486_MiSTer;
+// z386 had a simplified blocking-assignment NCO with a coarser dither pattern).
+localparam INCREMENT = 32'd26250000; // = 11 * (2 * PIT_frequency)
+reg [31:0] clk_rate;                 // = 11 * (clock_rate)
 always @(posedge clk) begin
+    clk_rate <= ({4'b0, clock_rate} << 3) + ({4'b0, clock_rate} << 1) + {4'b0, clock_rate};
+end
 
-	ce_system_counter = 0;
-	sum = sum + 28'd2386362; // 1193181hz * 2
-	if(sum >= clk_rate) begin
-		sum = sum - clk_rate;
-		ce_system_counter = 1;
-	end
+reg [31:0] sum;
+reg ce_system_counter;
+always @(posedge clk) begin
+    if (!rst_n) begin
+        sum <= 32'd0;
+        ce_system_counter <= 1'b0;
+    end else begin
+        if ((sum + INCREMENT) >= clk_rate) begin
+            sum <= (sum + INCREMENT) - clk_rate;
+            ce_system_counter <= 1'b1;
+        end else begin
+            sum <= (sum + INCREMENT);
+            ce_system_counter <= 1'b0;
+        end
+    end
 end
 
 reg system_clock;
@@ -68,12 +79,12 @@ end
 
 //------------------------------------------------------------------------------ read io
 
-assign io_readdata =
-    (io_address == 0) ? counter_0_readdata :
-    (io_address == 1) ? counter_1_readdata :
-    (io_address == 2) ? counter_2_readdata :
-    (io_address[2])   ? { 2'b0, spk_out, counter_1_toggle, 2'b0, speaker_enable, speaker_gate } :
-                         8'd0; //control address
+always @(posedge clk) if(io_read) io_readdata <=
+    (io_read && io_address == 0) ? counter_0_readdata :
+    (io_read && io_address == 1) ? counter_1_readdata :
+    (io_read && io_address == 2) ? counter_2_readdata :
+    (io_read && io_address[2])   ? { 2'b0, spk_out, counter_1_toggle, 2'b0, speaker_enable, speaker_gate } :
+                                     8'd0; //control address
 
 //------------------------------------------------------------------------------ refresh counter
 

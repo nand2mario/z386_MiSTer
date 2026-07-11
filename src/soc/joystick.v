@@ -31,9 +31,9 @@ wire ana_2_activity = $signed(ana_2[ 7:0]) < -ANALOG_ACTIVITY_THRESHOLD || ANALO
 
 // 20 kHz clock for Gravis Interface Protocol (GrIP)
 reg clk_grav;
+reg [27:0] sum_grav = 28'd0;   // module scope: a block-local `reg=0` accumulator never
+                               // accumulates in Verilator (treated automatic) -> strobe dead in sim
 always @(posedge clk) begin
-  reg [27:0] sum_grav = 28'd0;
-
   sum_grav = sum_grav + 16'd40000;
   if(sum_grav >= clock_rate) begin
     sum_grav = sum_grav - clock_rate;
@@ -44,9 +44,8 @@ end
 // 1.1 us tick used for the IBM joystick time formula
 // (see the relevant code below for more information)
 reg tick_1100ns;
+reg [27:0] sum_timed = 28'd0;   // module scope (see sum_grav)
 always @(posedge clk) begin
-  reg [27:0] sum_timed = 28'd0;
-
   sum_timed = write ? 28'd0 : sum_timed + 20'd909091; // tick every 1.1 us
   tick_1100ns = 1'b0;
   if(sum_timed >= clock_rate) begin

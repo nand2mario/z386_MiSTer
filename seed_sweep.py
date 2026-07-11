@@ -288,14 +288,19 @@ def copy_project_for_seed(project_dir: Path, dst: Path) -> None:
     copy_tree(project_dir, dst, ignored)
 
 
-def prepare_seed_work_tree(project_dir: Path, seed_dir: Path) -> Path:
-    repo_root = project_dir.parent
+def prepare_seed_work_tree(project_dir: Path, seed_dir: Path,
+                           snapshot_dir: Path | None = None) -> Path:
     work_root = seed_dir / "work"
     if work_root.exists():
         shutil.rmtree(work_root)
     work_root.mkdir(parents=True)
 
-    copy_project_for_seed(project_dir, work_root / project_dir.name)
+    if snapshot_dir is not None:
+        # Copy from the launch-time snapshot so source edits made while the
+        # sweep runs cannot leak into later seed waves.
+        shutil.copytree(snapshot_dir, work_root / project_dir.name)
+    else:
+        copy_project_for_seed(project_dir, work_root / project_dir.name)
 
     return work_root / project_dir.name
 
@@ -311,6 +316,7 @@ def run_one_seed(
     processors_per_job: int | None,
     use_work_copy: bool,
     stream: bool,
+    snapshot_dir: Path | None = None,
 ) -> Result:
     seed_dir = out_dir / f"seed_{seed:02d}"
     seed_dir.mkdir(parents=True, exist_ok=True)
@@ -319,7 +325,7 @@ def run_one_seed(
     build_dir = project_dir
     work_dir: Path | None = None
     if use_work_copy:
-        work_dir = prepare_seed_work_tree(project_dir, seed_dir)
+        work_dir = prepare_seed_work_tree(project_dir, seed_dir, snapshot_dir)
         build_dir = work_dir
 
     qsf = build_dir / f"{PROJECT}.qsf"
@@ -488,6 +494,12 @@ def main() -> int:
             if args.work_root is not None:
                 print_event("warning: --work-root is ignored; per-seed work trees live under the sweep output")
 
+            # Snapshot the project (following the src/z386 symlink) ONCE at
+            # launch: per-seed work trees copy from this, so the live tree
+            # can keep moving while the sweep runs.
+            snapshot_dir = out_dir / "src_snapshot" / project_dir.name
+            copy_project_for_seed(project_dir, snapshot_dir)
+            print_event(f"Source snapshot: {snapshot_dir}")
             print_event(
                 f"Parallel sweep: jobs={args.jobs}, processors_per_job={processors_per_job}, "
                 f"work_root={out_dir}/seed_XX/work"
@@ -515,6 +527,7 @@ def main() -> int:
                         processors_per_job,
                         True,
                         False,
+                        snapshot_dir,
                     )
                     pending[fut] = seed
 

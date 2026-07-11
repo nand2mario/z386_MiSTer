@@ -54,11 +54,18 @@ struct Pixel {
 static Vz386_mister_sim tb;
 static VerilatedFstC* trace = nullptr;
 static vluint64_t sim_time = 0;
+uint64_t g_ide_time = 0;
 static bool posedge = false;
 static bool trace_toggle = false;
 static bool trace_loop_started = false;
 static uint64_t trace_start_cycle = 0;
 static uint64_t current_cycle = 0;
+
+// SB audio dropout (flatline) detector / auto-trace arming.
+static bool     arm_trace_on_flatline = false;
+static uint64_t force_stop_cycle = 0;          // 0 = no forced stop
+static uint64_t flatline_trace_window = 8000000;
+static const uint64_t FLATLINE_HOLD_THRESHOLD = 150000; // posedges of frozen output
 
 static string disk_path = "../../sdcard/freedos.img";
 static string floppy_path;
@@ -70,6 +77,13 @@ static constexpr size_t DDR_SIZE = 16 * 1024 * 1024;
 static std::vector<uint8_t> ddram_mem(DDR_SIZE);
 static bool ddram_resp_valid = false;
 static uint64_t ddram_resp_data = 0;
+// SVGA framebuffer capture: the RTL writes the linear FB to DDR3 byte 0x3F800000+
+// (= FB_BASE {4'h3,6'b111110,...}), far above the 16MB ddram_mem, so capture it in a
+// dedicated buffer to dump the image the HPS scaler would display.
+static constexpr uint64_t FB_BASE_BYTE = 0x3F800000ull;
+static constexpr size_t   FB_MEM_SIZE  = 4 * 1024 * 1024;   // 64 banks * 64KB
+static std::vector<uint8_t> fb_mem(FB_MEM_SIZE, 0);
+static uint64_t fb_writes = 0;
 
 struct ScheduledPs2Bytes {
 	uint64_t cycle;
@@ -564,6 +578,30 @@ static void step() {
 		}
 	}
 	if (posedge) {
+		// Audio-dropout detector: a frozen SB output sample = DMA underrun.
+		static int16_t fl_last = 0;
+		static uint64_t fl_hold = 0, fl_start = 0;
+		int16_t v = static_cast<int16_t>(tb.sample_sb_l);
+		// The dropout freezes the output at -32768 (DMA byte 0x00); true silence
+		// (byte 0x80) maps to 0 and boot is also 0 -> only arm on a non-zero hold.
+		if (v == fl_last) {
+			fl_hold++;
+			if (arm_trace_on_flatline && fl_last != 0 && fl_hold == FLATLINE_HOLD_THRESHOLD && force_stop_cycle == 0) {
+				trace_start_cycle = current_cycle;          // begin dumping from here
+				force_stop_cycle  = current_cycle + flatline_trace_window;
+				fprintf(stderr, "FLATLINE @cycle %llu held=%d; arming trace until %llu\n",
+				        (unsigned long long)fl_start, (int)fl_last,
+				        (unsigned long long)force_stop_cycle);
+			}
+		} else {
+			if (fl_hold > FLATLINE_HOLD_THRESHOLD && fl_last != 0)
+				fprintf(stderr, "FLATLINE @cycle %llu held=%d for %llu posedges\n",
+				        (unsigned long long)fl_start, (int)fl_last,
+				        (unsigned long long)fl_hold);
+			fl_last = v; fl_hold = 0; fl_start = current_cycle;
+		}
+	}
+	if (posedge) {
 		bool read_accepted = tb.ddram_rd && !tb.ddram_busy;
 		if (read_accepted) {
 			uint64_t byte_addr = static_cast<uint64_t>(tb.ddram_addr) << 3;
@@ -579,6 +617,21 @@ static void step() {
 			ddram_resp_valid = true;
 		} else if (ddram_resp_valid) {
 			ddram_resp_valid = false;
+		}
+		// DDR3 write (SVGA framebuffer + any other ddram writes), byte-enabled
+		if (tb.ddram_we && !tb.ddram_busy) {
+			uint64_t byte_addr = static_cast<uint64_t>(tb.ddram_addr) << 3;
+			for (int i = 0; i < 8; i++) {
+				if (!((tb.ddram_be >> i) & 1)) continue;
+				uint8_t b = static_cast<uint8_t>((tb.ddram_din >> (8 * i)) & 0xFF);
+				uint64_t a = byte_addr + static_cast<uint64_t>(i);
+				if (a >= FB_BASE_BYTE && a < FB_BASE_BYTE + FB_MEM_SIZE) {
+					fb_mem[a - FB_BASE_BYTE] = b;
+					fb_writes++;
+				} else if (a >= DDR_SHMEM_BASE && (a - DDR_SHMEM_BASE) < ddram_mem.size()) {
+					ddram_mem[a - DDR_SHMEM_BASE] = b;
+				}
+			}
 		}
 	}
 	if (trace && trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle) trace->dump(sim_time);
@@ -636,13 +689,14 @@ static void configure_floppy_slot(unsigned slot, bool present, const FloppyGeome
 
 static void configure_cmos(bool hdd0_present, bool floppy0_present, const FloppyGeometry& floppy0_geo,
                            bool boot_from_floppy = false) {
-	// RTC seed: host wall-clock by default, but a fixed value when
-	// Z386_FIXED_RTC is set, so two sim runs are bit-identical from reset
-	// (needed for cross-build diffs — otherwise the CMOS time read in BIOS
-	// POST diverges and contaminates the comparison).
-	std::time_t now = std::getenv("Z386_FIXED_RTC") ? (std::time_t)1700000000 : std::time(nullptr);
+	// RTC seed: fixed 2024-01-01 00:00:00 UTC, matching ao486-sim's CMOS seed.
+	// Must NOT use the host wall-clock — otherwise every run is non-deterministic
+	// AND diverges from ao486-sim (whose clock starts at 00:00:00), contaminating
+	// every INT 1Ah time read in the z386<->ao486 CS:EIP diff. gmtime_r keeps it
+	// timezone-independent.
+	std::time_t now = (std::time_t)1704067200;  // 2024-01-01 00:00:00 UTC
 	std::tm tm{};
-	localtime_r(&now, &tm);
+	gmtime_r(&now, &tm);
 
 	uint8_t cmos[128] = {};
 
@@ -695,8 +749,28 @@ static void configure_x86_management(bool hdd0_present, const HpsFloppy& floppy0
 	configure_cmos(hdd0_present, floppy0.present(), floppy0.geometry(), boot_from_floppy);
 }
 
+// Dump the captured SVGA framebuffer (8bpp indices) as a grayscale PPM so we can
+// inspect the layout (e.g. mode-101 grid) the HPS scaler would display from DDR3.
+static void dump_fb(const char* path) {
+	FILE* f = fopen(path, "wb");
+	if (!f) return;
+	const int W = 640, H = 480;             // mode 101; FB_STRIDE = vga_stride*8 = 640
+	fprintf(f, "P6\n%d %d\n255\n", W, H);
+	for (int y = 0; y < H; y++)
+		for (int x = 0; x < W; x++) {
+			uint8_t idx = fb_mem[(size_t)y * W + x];
+			fputc(idx, f); fputc(idx, f); fputc(idx, f);   // grayscale = palette index
+		}
+	fclose(f);
+	// diagnostic: where in fb_mem did the writes actually land?
+	size_t lo = FB_MEM_SIZE, hi = 0; long nz = 0;
+	for (size_t k = 0; k < FB_MEM_SIZE; k++)
+		if (fb_mem[k]) { nz++; if (k < lo) lo = k; if (k > hi) hi = k; }
+	printf("   FB extent: nonzero=%ld range=[0x%zx..0x%zx]\n", nz, (size_t)(nz?lo:0), hi);
+}
+
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start cycle] [--headless] [--cycles N] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--enter-at cycle] [--ctrl-alt-del-at cycle] [--screen-at cycle] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--enter-at sim_time] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle)\n";
 }
 
 int main(int argc, char** argv) {
@@ -718,12 +792,14 @@ int main(int argc, char** argv) {
 		if (arg == "--trace") {
 			enable_trace = true;
 		} else if (arg == "--trace-start" && i + 1 < argc) {
-			trace_start_cycle = std::stoull(argv[++i]);
+			// All CLI time values are sim_time (unified with ao486-sim, and with
+			// the fst/IDE/FRAME logs). Internal counters are cycles; sim_time = 2*cycle.
+			trace_start_cycle = std::stoull(argv[++i]) / 2;
 			enable_trace = true;
 		} else if (arg == "--headless") {
 			g_headless = true;
-		} else if (arg == "--cycles" && i + 1 < argc) {
-			max_cycles = std::stoull(argv[++i]);
+		} else if (arg == "--end" && i + 1 < argc) {
+			max_cycles = std::stoull(argv[++i]) / 2;   // sim_time -> cycles
 		} else if (arg == "--disk" && i + 1 < argc) {
 			disk_path = argv[++i];
 		} else if (arg == "--jitter" && i + 1 < argc) {
@@ -735,17 +811,23 @@ int main(int argc, char** argv) {
 		} else if (arg == "--boot1" && i + 1 < argc) {
 			boot1_path = argv[++i];
 		} else if (arg == "--enter-at" && i + 1 < argc) {
-			enter_cycles.push_back(std::stoull(argv[++i]));
+			enter_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--ctrl-alt-del-at" && i + 1 < argc) {
-			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]));
+			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--screen-at" && i + 1 < argc) {
-			screen_check_cycles.push_back(std::stoull(argv[++i]));
+			screen_check_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--ide") {
 			g_ide_debug = true;
 		} else if (arg == "--no-ide") {
 			g_ide_debug = false;
 		} else if (arg == "--record") {
 			record_audio = true;
+		} else if (arg == "--trace-on-flatline") {
+			arm_trace_on_flatline = true;
+			enable_trace = true;
+			trace_start_cycle = std::numeric_limits<uint64_t>::max(); // until detector arms
+		} else if (arg == "--flatline-window" && i + 1 < argc) {
+			flatline_trace_window = std::stoull(argv[++i]) / 2;   // sim_time -> cycles
 		} else if (arg == "--checkpoint-dir" && i + 1 < argc) {
 			checkpoint_dir = argv[++i];
 		} else if (arg == "--checkpoint-interval-sec" && i + 1 < argc) {
@@ -964,7 +1046,7 @@ int main(int argc, char** argv) {
 			tb.sim_kbd_data_valid = 1;
 			last_kbd_byte_time = cycle;
 			printf("%8llu: Sending scancode 0x%02X\n",
-			       (unsigned long long)cycle, byte);
+			       (unsigned long long)sim_time, byte);
 		} else {
 			tb.sim_kbd_data_valid = 0;
 		}
@@ -978,7 +1060,7 @@ int main(int argc, char** argv) {
 		if (kbd_host_valid && !kbd_host_busy) {
 			uint8_t cmd = static_cast<uint8_t>(kbd_host_data & 0xFF);
 			printf("%8llu: Received keyboard command 0x%02X\n",
-			       (unsigned long long)cycle, cmd);
+			       (unsigned long long)sim_time, cmd);
 			handle_kbd_host_cmd(cmd);
 			kbd_host_busy = true;
 			kbd_host_clear_pending = true;
@@ -1034,7 +1116,7 @@ int main(int argc, char** argv) {
 					if (p->r || p->g || p->b) frame_pix_cnt++;
 					if (!saw_nonblack_pixel && (p->r || p->g || p->b)) {
 						saw_nonblack_pixel = true;
-						cout << cycle << ": first non-black VGA pixel at x=" << scan_x
+						cout << sim_time << ": first non-black VGA pixel at x=" << scan_x
 						     << " y=" << scan_y << "\n";
 					}
 				}
@@ -1047,7 +1129,7 @@ int main(int argc, char** argv) {
 			saw_video_sync = true;
 			if (frame_x_max >= 640) resolution_x = std::min(frame_x_max, H_RES);
 			if (frame_line_max >= 300) resolution_y = std::min(frame_line_max, V_RES);
-			cout << cycle << ": FRAME: PE=" << static_cast<int>(tb.dbg_pe)
+			cout << sim_time << ": FRAME: PE=" << static_cast<int>(tb.dbg_pe)
 			     << " VM=" << static_cast<int>(tb.dbg_vm)
 			     << " CS:EIP=" << std::hex << tb.dbg_cs << ":" << tb.dbg_eip
 			     << std::dec << " pix=" << frame_pix_cnt
@@ -1061,7 +1143,7 @@ int main(int argc, char** argv) {
 			if (saw_post_boot_exec && cycle >= next_console_text_check) {
 				std::string screen = current_text_screen();
 				if (screen != last_console_text) {
-					cout << cycle << ": VGA text update\n";
+					cout << sim_time << ": VGA text update\n";
 					dump_nonempty_rows(screen);
 					last_console_text = screen;
 				}
@@ -1072,10 +1154,10 @@ int main(int argc, char** argv) {
 			    cycle >= screen_check_cycles[next_screen_check]) {
 				std::string screen = current_text_screen();
 				std::string row = row_for_match(screen, "Press ESC for boot menu");
-				cout << cycle << ": screen checkpoint\n";
+				cout << sim_time << ": screen checkpoint\n";
 				if (!row.empty()) {
 					saw_boot_menu_text = true;
-					cout << cycle << ": boot menu text: [" << row << "]\n";
+					cout << sim_time << ": boot menu text: [" << row << "]\n";
 				} else {
 					dump_nonempty_rows(screen);
 				}
@@ -1207,7 +1289,7 @@ int main(int argc, char** argv) {
 			latest << final_dir.string() << "\n";
 		}
 		prune_checkpoints();
-		cout << cycle << ": checkpoint saved to " << final_dir << "\n";
+		cout << sim_time << ": checkpoint saved to " << final_dir << "\n";
 	};
 
 	auto restore_checkpoint = [&]() {
@@ -1287,7 +1369,7 @@ int main(int argc, char** argv) {
 			mouse_captured = false;
 			set_mouse_capture(restored_mouse_capture);
 		}
-		cout << "restored checkpoint " << dir << " at cycle " << current_cycle << "\n";
+		cout << "restored checkpoint " << dir << " at sim_time " << sim_time << " (cycle " << current_cycle << ")\n";
 	};
 
 	try {
@@ -1297,12 +1379,19 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	for (uint64_t cycle = loop_start_cycle; cycle < max_cycles && running; ++cycle) {
+	for (uint64_t cycle = loop_start_cycle; cycle < max_cycles && running && (force_stop_cycle == 0 || cycle < force_stop_cycle); ++cycle) {
 		current_cycle = cycle;
+		// Periodically dump the captured SVGA framebuffer (DDR3 path verification)
+		if ((cycle % 2000000) == 0 && fb_writes > 0) {
+			dump_fb("/tmp/z386_fb.ppm");
+			printf("%llu: SVGA FB dump -> /tmp/z386_fb.ppm (fb_writes=%llu)\n",
+			       (unsigned long long)sim_time, (unsigned long long)fb_writes);
+		}
 		tb.sim_soft_reset = (sim_soft_reset_cycles > 0) ? 1 : 0;
 		if (sim_soft_reset_cycles > 0) sim_soft_reset_cycles--;
 		tb.mgmt_read = 0;
 		tb.mgmt_write = 0;
+		g_ide_time = sim_time;
 		ide0.tick(tb);
 		if (!tb.mgmt_read && !tb.mgmt_write) ide1.tick(tb);
 		if (!tb.mgmt_read && !tb.mgmt_write) floppy0.tick(tb);
@@ -1322,6 +1411,27 @@ int main(int argc, char** argv) {
 		step();
 		keyboard_observe_post(cycle);
 		consume_video(cycle);
+
+		// --- VGA attribute-controller PELWIDTH debug (mode-101 issue #5) ---
+		// {
+		// 	auto* vsys = tb.z386_mister_sim->system_i;
+		// 	static uint8_t prev_aiw = 0, prev_pelw = 0xFF, prev_gsm = 0xFF;
+		// 	uint8_t aiw  = vsys->__PVT__vga_inst__DOT__attrib_io_write;
+		// 	uint8_t aidx = vsys->__PVT__vga_inst__DOT__attrib_io_index;
+		// 	uint8_t pelw = vsys->__PVT__vga_inst__DOT__attrib_pelclock_div2;
+		// 	uint8_t ff   = vsys->__PVT__vga_inst__DOT__attrib_flip_flop;
+		// 	uint8_t gsm  = vsys->__PVT__vga_inst__DOT__graph_shift_mode;
+		// 	if (aiw && !prev_aiw)
+		// 		printf("%llu: ATTR-WR reg=0x%02x ff=%d pelw=%d\n",
+		// 		       (unsigned long long)cycle, aidx, ff, prev_pelw);
+		// 	if (pelw != prev_pelw)
+		// 		printf("%llu: >>> attrib_pelclock_div2 %d -> %d\n",
+		// 		       (unsigned long long)cycle, prev_pelw, pelw);
+		// 	if (gsm != prev_gsm)
+		// 		printf("%llu: graph_shift_mode -> %d\n",
+		// 		       (unsigned long long)cycle, gsm);
+		// 	prev_aiw = aiw; prev_pelw = pelw; prev_gsm = gsm;
+		// }
 
 		bool bios_dbg_wr = tb.dbg_uart_we;
 		if (bios_dbg_wr && !bios_dbg_wr_prev) {
@@ -1379,7 +1489,7 @@ int main(int argc, char** argv) {
 					} else if (soft_reset_hotkey) {
 						gui_r_soft_reset_active = true;
 						sim_soft_reset_cycles = 8;
-						cout << cycle << ": GUI-R soft reset\n";
+						cout << sim_time << ": GUI-R soft reset\n";
 					} else if (checkpoint_hotkey) {
 						gui_c_checkpoint_active = true;
 						if (checkpoint_dir.empty()) checkpoint_dir = "checkpoints";
@@ -1454,7 +1564,7 @@ int main(int argc, char** argv) {
 		uint32_t linear_ip = tb.dbg_cs_base + tb.dbg_eip;
 		if (!saw_boot_sector && linear_ip >= 0x7C00 && linear_ip < 0x7E00) {
 			saw_boot_sector = true;
-			cout << cycle << ": boot sector execution at " << std::hex
+			cout << sim_time << ": boot sector execution at " << std::hex
 			     << tb.dbg_cs << ":" << tb.dbg_eip
 			     << " linear=0x" << linear_ip << std::dec << "\n";
 		}
@@ -1462,7 +1572,7 @@ int main(int argc, char** argv) {
 		    linear_ip < 0xA0000 &&
 		    !(linear_ip >= 0x7C00 && linear_ip < 0x7E00)) {
 			saw_post_boot_exec = true;
-			cout << cycle << ": post-boot execution at " << std::hex
+			cout << sim_time << ": post-boot execution at " << std::hex
 			     << tb.dbg_cs << ":" << tb.dbg_eip
 			     << " linear=0x" << linear_ip << std::dec << "\n";
 		}
@@ -1472,7 +1582,7 @@ int main(int argc, char** argv) {
 				boot_pages_seen[page] = true;
 				if (boot_page_logs < 32) {
 					boot_page_logs++;
-					cout << cycle << ": exec page 0x" << std::hex << page
+					cout << sim_time << ": exec page 0x" << std::hex << page
 					     << " CS:EIP=" << tb.dbg_cs << ":" << tb.dbg_eip
 					     << " linear=0x" << linear_ip
 					     << " PE=" << static_cast<int>(tb.dbg_pe)
@@ -1486,14 +1596,14 @@ int main(int argc, char** argv) {
 				last_post = tb.dbg_post_code;
 				have_post = true;
 				saw_post = true;
-				cout << cycle << ": POST " << std::hex << static_cast<int>(last_post)
+				cout << sim_time << ": POST " << std::hex << static_cast<int>(last_post)
 				     << " CS:EIP=" << tb.dbg_cs << ":" << tb.dbg_eip << std::dec << "\n";
 			}
 		}
 
 		if (tb.active && !saw_first_instruction) {
 			saw_first_instruction = true;
-			cout << cycle << ": core active at " << std::hex << tb.dbg_cs << ":" << tb.dbg_eip << std::dec << "\n";
+			cout << sim_time << ": core active at " << std::hex << tb.dbg_cs << ":" << tb.dbg_eip << std::dec << "\n";
 		}
 	}
 

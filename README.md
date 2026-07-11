@@ -1,7 +1,11 @@
 
 # z386 MiSTer core
 
-z386_MiSTer is an unofficial PC core for MiSTer built around z386, a new 80386-compatible CPU design. It currently behaves like a smaller ao486_MiSTer: 16 MB of RAM and roughly 75% of ao486_MiSTer's performance. The core is still experimental, but the goal is to keep improving it.
+z386_MiSTer is an unofficial PC core for MiSTer built around the extended
+`z386x` CPU branch. The core retains the original Intel 386 microcode engine
+and adds a faster frontend and bounded hardwired instruction paths. The July
+2026 build runs the Doom timedemo at 27.3 FPS versus 21.0 FPS on ao486 using
+the same MiSTer system.
 
 ## Trying It
 

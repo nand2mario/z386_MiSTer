@@ -23,7 +23,7 @@ set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
 set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS OFF
 # BEGIN build_profile.py settings
 # Active profile: production
-# 80 MHz clk_sys, 180 degree SDRAM clock, z386 timing optimization set
+# 85 MHz clk_sys, 180 degree SDRAM clock, z386 timing optimization set
 set_global_assignment -name OPTIMIZE_POWER_DURING_FITTING OFF
 set_global_assignment -name FINAL_PLACEMENT_OPTIMIZATION ALWAYS
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
@@ -321,6 +321,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE src/z386/z386.sv
 
 
 # --- TNS floorplan experiment: legacy LogicLock region for the CPU (BRAM-light)
+
+
+
+
+
+
 
 
 

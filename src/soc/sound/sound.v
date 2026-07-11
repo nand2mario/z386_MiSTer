@@ -195,13 +195,14 @@ reg [7:0] cms_det;
 always @(posedge clk) if(write && cms_wr && &address[2:1]) cms_det <= writedata;
 
 reg ce_saa;
+// Module-scope accumulator (see ce_1us note above): a block-local `reg = 0` is
+// treated as automatic by Verilator and never accumulates.
+reg [27:0] ce_saa_sum = 0;
 always @(posedge clk) begin
-	reg [27:0] sum = 0;
-
 	ce_saa = 0;
-	sum = sum + 28'd7159090;
-	if(sum >= clk_rate) begin
-		sum = sum - clk_rate;
+	ce_saa_sum = ce_saa_sum + 28'd7159090;
+	if(ce_saa_sum >= clk_rate) begin
+		ce_saa_sum = ce_saa_sum - clk_rate;
 		ce_saa = 1;
 	end
 end

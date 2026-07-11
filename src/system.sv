@@ -430,6 +430,7 @@ z386 #(
     .inta              (cpu_inta),
     .snoop_addr        (dma_snoop_addr),
     .snoop_valid       (dma_snoop_valid),
+    .a20_enable        (a20_enable),
     .single_step       (1'b0),
     .dbg_CS            (debug_cpu_cs),
     .dbg_EIP           (debug_cpu_eip),
@@ -472,9 +473,9 @@ pic_inta_bridge inta_bridge (
 wire cpu_mem_valid = cpu_valid && !cpu_io_sig && !cpu_inta;
 wire cpu_mem_write = cpu_write;
 
-// A20 gate: mask address bit 20 when A20 is disabled
-wire [31:0] cpu_byte_addr_raw = a20_enable ? {cpu_addr, 2'b00}
-                                           : {cpu_addr[31:21], 1'b0, cpu_addr[19:2], 2'b00};
+// A20 gating now lives inside z386_cpu (masked BEFORE the L1 caches via a20_mask),
+// so cpu_addr is already A20-gated here — no second mask needed.
+wire [31:0] cpu_byte_addr_raw = {cpu_addr, 2'b00};
 // Mirror the high 256 KiB reset-vector region to the copied ROM image.
 wire is_bios_mirror_alias = &cpu_byte_addr_raw[31:18];    // 0xFFFC0000+
 wire [31:0] cpu_byte_addr = is_bios_mirror_alias

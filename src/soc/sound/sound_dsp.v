@@ -452,15 +452,19 @@ wire pause_finished  = pause_decrement && !len_left;
 //------------------------------------------------------------------------------ sample clk
 
 reg ce_smp;
+// Accumulator must be module-scope: Verilator treats a block-local `reg = 0`
+// here as automatic, so it never accumulates and ce_smp never fires (silent
+// SB audio in sim). Same fix as ce_1us in sound.v. Synthesis is unaffected
+// (a declared-in-always reg is a static power-up register either way).
+reg [27:0] smp_sum = 0;
 always @(posedge clk) begin
-	reg [27:0] sum = 0;
 	if(!rst_n) begin
-		sum = 0;
+		smp_sum = 0;
 	end else begin
 		ce_smp = 0;
-		sum = sum + clk_smp;
-		if(sum >= clock_rate) begin
-			sum = sum - clock_rate;
+		smp_sum = smp_sum + clk_smp;
+		if(smp_sum >= clock_rate) begin
+			smp_sum = smp_sum - clock_rate;
 			ce_smp = 1;
 		end
 	end

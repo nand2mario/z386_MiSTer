@@ -11,6 +11,7 @@ using std::cout;
 using std::ifstream;
 using std::ios;
 using std::string;
+extern uint64_t g_ide_time;  // = sim_time (main.cpp), for IDE log timestamps
 
 template <typename T>
 static void write_pod(std::ostream& out, const T& value) {
@@ -606,7 +607,7 @@ void HpsIde::tick(Vz386_mister_sim& tb) {
     case READ_REGS: {
         uint32_t lba = get_lba();
         if (debug_) {
-            cout << "IDE" << static_cast<int>(id_) << ": READ lba=" << lba
+            cout << g_ide_time << ": IDE" << static_cast<int>(id_) << ": READ lba=" << lba
                  << " remaining=" << regs_.sector_count << "\n";
         }
         if ((static_cast<uint64_t>(lba) + 1ull) * 512ull > image_.size()) {
@@ -659,7 +660,7 @@ void HpsIde::tick(Vz386_mister_sim& tb) {
     case WRITE_REGS: {
         uint32_t lba = get_lba();
         if (debug_) {
-            cout << "IDE" << static_cast<int>(id_) << ": WRITE lba=" << lba
+            cout << g_ide_time << ": IDE" << static_cast<int>(id_) << ": WRITE lba=" << lba
                  << " remaining=" << regs_.sector_count << "\n";
         }
         if ((static_cast<uint64_t>(lba) + 1ull) * 512ull <= image_.size()) {

@@ -819,7 +819,11 @@ wire [7:0] host_io_read_wire =
 	(host_io_ignored)                                            ? 8'hFF :
 	(io_c_read_valid && io_address == 4'hC)                      ? { general_vsync, general_hsync, general_odd_even_page, 1'b0, general_clock_select, general_enable_ram, general_io_space } : //misc output reg
 	(io_c_read_valid && io_address == 4'h2)                      ? { interrupt, 2'b0, 1'b1, 4'b0 } : //input status 0
-	((io_b_read_valid || io_d_read_valid) && io_address == 4'hA) ? { ~host_io_vertical_retrace, 3'b0, host_io_vertical_retrace, 2'b0, host_io_not_displaying } : //input status 1
+	// bit1: live toggling signal (mirrors display-enable).  The Bochs VBIOS's
+	// 3-phase toggle detector (c000:630B) polls IS1 bit1; with bit1 wired zero
+	// its timeout costs ~+18M sim of boot.  Real-era software never reads bit1
+	// (EGA light-pen strobe).  ao486's vga.v has the same zero-wired bit.
+	((io_b_read_valid || io_d_read_valid) && io_address == 4'hA) ? { ~host_io_vertical_retrace, 3'b0, host_io_vertical_retrace, 1'b0, host_io_not_displaying, host_io_not_displaying } : //input status 1
 	((io_b_read_valid || io_d_read_valid) && io_address == 4'h8) ? { dmc_bit_7_key, herc_2nd_page_enabled, dmc_bit_5_key, 5'b00000} : // display mode control
 	(io_c_read_valid && io_address == 4'h0)                      ? { 2'b0, attrib_pas, attrib_io_index } : //attrib read index (regardless the flip-flop state)
 	(io_c_read_valid && io_address == 4'h1)                      ? host_io_read_attrib : //attrib read data
