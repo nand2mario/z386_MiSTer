@@ -1,16 +1,25 @@
-
 # z386 MiSTer core
 
-z386_MiSTer is an unofficial PC core for MiSTer built around the extended
-`z386x` CPU branch. The core retains the original Intel 386 microcode engine
-and adds a faster frontend and bounded hardwired instruction paths. The July
-2026 build runs the Doom timedemo at 27.3 FPS versus 21.0 FPS on ao486 using
-the same MiSTer system.
+z386_MiSTer is an experimental PC core for MiSTer built around the
+[z386x CPU](https://github.com/nand2mario/z386/tree/z386x). z386x combines the
+original Intel 386 microcode with performance optimizations and architectural
+extensions. Current optimizations include a faster frontend and hardwired fast
+paths for common instructions.
+
+The July 2026 build runs the Doom timedemo at 27.3 FPS, compared with 21.0 FPS
+on ao486 using the same MiSTer system.
 
 ## Trying It
 
-z386_MiSTer requires an SDRAM module. Unlike ao486_MiSTer, which uses DDR3, this core uses MiSTer SDRAM. The SDRAM XS-D v2.5 module is verified to work.
+z386_MiSTer requires an SDRAM module. Unlike ao486_MiSTer, which uses DDR3,
+this core uses MiSTer SDRAM. The SDRAM XS-D v2.5 module has been verified to
+work.
 
-Download a build from the [release page](https://github.com/nand2mario/z386_MiSTer/releases). Put `MiSTer` file in /media/fat (after backing up your existing `MiSTer`), z386_*.rbf in /media/fat/_Computer and [boot0.rom](verilator/boot0.rom), [boot1.rom](verilator/boot1.rom), game disk images (.vhd files) in `/media/fat/games/Z386`.
+Download the latest build from the
+[releases page](https://github.com/nand2mario/z386_MiSTer/releases), then place
+the files as follows:
 
-.
+- `MiSTer` in `/media/fat` after backing up the existing file
+- `z386_*.rbf` in `/media/fat/_Computer`
+- [boot0.rom](verilator/boot0.rom), [boot1.rom](verilator/boot1.rom), and disk
+  images (`.vhd`) in `/media/fat/games/Z386`
