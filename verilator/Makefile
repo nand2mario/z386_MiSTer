@@ -2,7 +2,9 @@ VERILATOR = verilator
 VERILATOR_BUILD_JOBS ?= 8
 SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
-VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
+PNG_CFLAGS=$(shell pkg-config --cflags libpng)
+PNG_LIBS=$(shell pkg-config --libs libpng)
+VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) $(PNG_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS) $(PNG_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
 VERILATOR_INCLUDE = -I../src -I../src/z386
 
 D=../src
