@@ -406,6 +406,8 @@ system #(
 	.dbg_cpu_din_z       (dbg_cpu_din_z),
 
 	.bootcfg             ({4'd0, status[2:1]}),
+	.ram_size            (status[30:29]),
+	.sdram_size          (2'd3),
 	.uma_ram             (1'b0),
 	.syscfg              (syscfg),
 

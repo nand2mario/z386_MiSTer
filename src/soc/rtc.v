@@ -24,9 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-module rtc #(
-	parameter FORCE_16MB = 1'b0
-) (
+module rtc (
 	input             clk,
 	input             rst_n,
 
@@ -40,6 +38,7 @@ module rtc #(
 	input       [7:0] io_writedata,
 
 	input       [5:0] bootcfg,
+	input       [1:0] ram_size,
 
 	//mgmt slave
 	/*
@@ -75,21 +74,38 @@ wire rtc_clock_running = ~(crb_freeze || divider[2:1] == 2'b11);
 wire rtc_update_in_progress = rtc_clock_running && second_major <= 13'd1;
 wire rtc_second_update = rtc_clock_running && ce_8192hz && second_major == 13'd0;
 
+reg [7:0] mgmt_ext_mem_lsb;
 reg [7:0] mgmt_ext_mem_msb;
 reg [15:0] mgmt_checksum;
 
 always @(posedge clk) begin
 	if(rst_n == 1'b0) begin
+		mgmt_ext_mem_lsb <= 8'h00;
 		mgmt_ext_mem_msb <= 8'h3C;
 		mgmt_checksum <= 16'd0;
 	end else if(mgmt_write) begin
+		if(mgmt_address == 8'h17) mgmt_ext_mem_lsb <= mgmt_writedata;
 		if(mgmt_address == 8'h18) mgmt_ext_mem_msb <= mgmt_writedata;
 		if(mgmt_address == 8'h2E) mgmt_checksum[15:8] <= mgmt_writedata;
 		if(mgmt_address == 8'h2F) mgmt_checksum[7:0] <= mgmt_writedata;
 	end
 end
 
-wire [15:0] force16_checksum = mgmt_checksum + 16'h003C - {8'd0, mgmt_ext_mem_msb};
+// CMOS 17h/18h and 30h/31h report KiB above 1MB (capped at
+// 65535). 34h/35h report 64KB blocks above 16MB.
+reg [15:0] configured_ext_mem;
+reg [15:0] configured_ext_mem_64k;
+always @* begin
+	case (ram_size)
+	2'd0: begin configured_ext_mem = 16'h3C00; configured_ext_mem_64k = 16'h0000; end
+	2'd1: begin configured_ext_mem = 16'h7C00; configured_ext_mem_64k = 16'h0100; end
+	2'd2: begin configured_ext_mem = 16'hFC00; configured_ext_mem_64k = 16'h0300; end
+	default: begin configured_ext_mem = 16'hFFFF; configured_ext_mem_64k = 16'h0700; end
+	endcase
+end
+wire [15:0] configured_checksum =
+    mgmt_checksum + {8'd0, configured_ext_mem[7:0]} + {8'd0, configured_ext_mem[15:8]}
+                  - {8'd0, mgmt_ext_mem_lsb} - {8'd0, mgmt_ext_mem_msb};
 
 reg io_read_last;
 always @(posedge clk) begin if(rst_n == 1'b0) io_read_last <= 1'b0; else if(io_read_last) io_read_last <= 1'b0; else io_read_last <= io_read; end 
@@ -118,14 +134,14 @@ wire [7:0] io_readdata_next =
     (ram_address == 7'h3D) ? {2'b00, bootcfg[3:2], 2'b00, bootcfg[1:0]} :
     (ram_address == 7'h32) ? rtc_century :
     (ram_address == 7'h37) ? rtc_century :
-    (FORCE_16MB && ram_address == 7'h17) ? 8'h00 :
-    (FORCE_16MB && ram_address == 7'h18) ? 8'h3C :
-    (FORCE_16MB && ram_address == 7'h2E) ? force16_checksum[15:8] :
-    (FORCE_16MB && ram_address == 7'h2F) ? force16_checksum[7:0] :
-    (FORCE_16MB && ram_address == 7'h30) ? 8'h00 :
-    (FORCE_16MB && ram_address == 7'h31) ? 8'h3C :
-    (FORCE_16MB && ram_address == 7'h34) ? 8'h00 :
-    (FORCE_16MB && ram_address == 7'h35) ? 8'h00 :
+    (ram_address == 7'h17) ? configured_ext_mem[7:0] :
+    (ram_address == 7'h18) ? configured_ext_mem[15:8] :
+    (ram_address == 7'h2E) ? configured_checksum[15:8] :
+    (ram_address == 7'h2F) ? configured_checksum[7:0] :
+    (ram_address == 7'h30) ? configured_ext_mem[7:0] :
+    (ram_address == 7'h31) ? configured_ext_mem[15:8] :
+    (ram_address == 7'h34) ? configured_ext_mem_64k[7:0] :
+    (ram_address == 7'h35) ? configured_ext_mem_64k[15:8] :
                              ram_q;
 
 always @(posedge clk) begin

@@ -122,6 +122,8 @@ module system (
     output [31:0] dbg_cpu_din_z,
 
 	input   [5:0] bootcfg,
+    input   [1:0] ram_size,       // 0/1/2/3 = 16/32/64/128MB exposed to software
+    input   [1:0] sdram_size,     // 1/2/3 = detected 32/64/128MB module geometry
     input         uma_ram,
 	output  [7:0] syscfg,
 
@@ -480,7 +482,7 @@ wire [31:0] cpu_byte_addr_raw = {cpu_addr, 2'b00};
 wire is_bios_mirror_alias = &cpu_byte_addr_raw[31:18];    // 0xFFFC0000+
 wire [31:0] cpu_byte_addr = is_bios_mirror_alias
                           ? (BIOS_MIRROR_BASE + {14'd0, cpu_byte_addr_raw[17:0]})
-                          : {7'h0, cpu_byte_addr_raw[24:0]};
+                          : {5'h0, cpu_byte_addr_raw[26:0]};
 
 // z386 owns the L1 internally, so UMA write-protect is handled at the CPU/cache
 // boundary through PROTECT_UMA_ROM. Nothing is bypassed here.
@@ -588,7 +590,7 @@ main_memory main_memory (
 
 // CPU → SDRAM port 0: main_memory holds signals stable until accepted
 wire        mem_busy;    // SDRAM initialization busy (used by boot loader)
-wire [24:0] mem_addr_word = mem_address[24:0];
+wire [26:0] mem_addr_word = mem_address[26:0];
 
 // DMA → SDRAM port 1
 // (dma_mem_ready declared above, before l1_cache)
@@ -644,6 +646,7 @@ sdram #(
 	.resetn            (~reset),
 	.refresh_allowed   (1'b1),
 	.busy              (mem_busy),
+	.sdram_size        (sdram_size),
 
 	// port 0 - CPU (via main_memory, valid/ready)
 	.valid0            (mem_valid),
@@ -661,7 +664,7 @@ sdram #(
 	.valid1            (dma_held_valid),
 	.ready1            (dma_mem_ready),
 	.wr1               (dma_held_wr),
-	.addr1             ({1'b0, dma_held_addr}),
+	.addr1             ({3'b000, dma_held_addr}),
 	.din1              (dma_mem_din),
 	.dout1             (dma_mem_dout),
 	.resp_valid1       (dma_mem_resp_valid),
@@ -673,7 +676,7 @@ sdram #(
 	.valid2            (1'b0),
 	.ready2            (),
 	.wr2               (1'b0),
-	.addr2             (25'd0),
+	.addr2             (27'd0),
 	.din2              (32'd0),
 	.dout2             (),
 	.resp_valid2       (),
@@ -1084,9 +1087,7 @@ ps2 ps2
 	.irq_mouse         (irq_12)
 );
 
-rtc #(
-	.FORCE_16MB         (1'b1)
-) rtc
+rtc rtc
 (
 	.clk               (clk_sys),
 	.rst_n             (~rst[8]),
@@ -1104,6 +1105,7 @@ rtc #(
 	.mgmt_writedata    (mgmt_writedata[7:0]),
 
 	.bootcfg           ({bootcfg[5:2], bootcfg[1:0] ? bootcfg[1:0] : {~fdd0_inserted, fdd0_inserted}}),
+	.ram_size          (ram_size),
 
 	.irq               (irq_8)
 );

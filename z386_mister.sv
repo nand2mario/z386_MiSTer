@@ -102,7 +102,7 @@ module emu
 	input         OSD_STATUS
 );
 
-localparam CLOCK_RATE_HZ = 85_000_000;
+localparam CLOCK_RATE_HZ = 50_000_000;
 localparam DCACHE_SET_BITS = 7;   // dcache size: 8 = 16KB, 7 = 8KB (4 ways x 16B/line)
 localparam ICACHE_SET_BITS = 7;   // icache size: 8 = 16KB, 7 = 8KB
 
@@ -131,7 +131,7 @@ localparam CONF_STR = {
 	"P1oO,SB Swap L/R,Off,On;",
 	"-;",
 	"P2,Hardware;",
-	"P2oDE,RAM Size,16MB,32MB,64MB,128MB;",
+	"P2oTU,RAM Size,16MB,32MB,64MB,128MB;",
 	"P2-;",
 	"P2o01,Boot 1st,Floppy/Hard Disk,Floppy,Hard Disk,CD-ROM;",
 	"P2o23,Boot 2nd,NONE,Floppy,Hard Disk,CD-ROM;",
@@ -363,6 +363,9 @@ wire        ioctl_upload;
 wire        ioctl_rd;
 wire [31:0] ioctl_file_ext;
 wire [15:0] sdram_sz;
+wire [1:0] detected_ram_size = |sdram_sz[1:0] ? sdram_sz[1:0] : 2'd1;
+wire [1:0] configured_ram_size = status[30:29] > detected_ram_size
+                               ? detected_ram_size : status[30:29];
 wire [64:0] rtc;
 wire [32:0] timestamp;
 wire [7:0]  uart_mode;
@@ -655,6 +658,8 @@ system #(
 	.dbg_cpu_din_z       (),
 
 	.bootcfg             (status[37:32]),
+	.ram_size            (configured_ram_size),
+	.sdram_size          (sdram_sz[1:0]),
 	.uma_ram             (1'b0),
 	.syscfg              (),
 

@@ -13,6 +13,7 @@ module sdram_x2_wrapper #(
     input             clk_2x,        // SDRAM engine clock (e.g. 40 MHz)
     input             resetn,
     input             refresh_allowed,
+    input       [1:0] sdram_size,
 
     // Expose busy to system domain (sampled on clk_sys)
     output reg        busy,
@@ -21,7 +22,7 @@ module sdram_x2_wrapper #(
     input             valid0,
     output reg        ready0,
     input             wr0,
-    input      [24:0] addr0,
+    input      [26:0] addr0,
     input      [31:0] din0,
     output reg [31:0] dout0,
     input       [3:0] be0,
@@ -32,7 +33,7 @@ module sdram_x2_wrapper #(
     input             valid1,
     output reg        ready1,
     input             wr1,
-    input      [24:0] addr1,
+    input      [26:0] addr1,
     input      [31:0] din1,
     output reg [31:0] dout1,
     input       [3:0] be1,
@@ -43,7 +44,7 @@ module sdram_x2_wrapper #(
     input             valid2,
     output reg        ready2,
     input             wr2,
-    input      [24:0] addr2,
+    input      [26:0] addr2,
     input      [31:0] din2,
     output reg [31:0] dout2,
     input       [3:0] be2,
@@ -96,6 +97,7 @@ sdram #(.FREQ(FREQ_2X)) u_sdram (
     .nce              (~phase),   // no new requests or refreshes on 1st phase (when phase == 0)
     .refresh_allowed  (refresh_allowed),
     .busy             (core_busy),
+    .sdram_size       (sdram_size),
 
     .valid0      (valid0),          // only sample when phase == 1
     .ready0      (core_ready0),

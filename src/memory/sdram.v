@@ -5,8 +5,8 @@
 // 2025.08: convert to 32-bit with burst read support.
 // 2026.04: derive SDRAM timing from FREQ up to 133MHz
 //
-// This is a 32-bit, low-latency and non-bursting controller for accessing the SDRAM module
-// on Tang boards and DE10-Nano. The SDRAM is 4 banks x 8192 rows x 512 columns x 16 bits (32MB in total).
+// This is a 32-bit, low-latency controller for 32/64/128MB MiSTer SDRAM
+// modules. A 128MB module contains two complementary-CS 64MB chips.
 //
 // Read timings (burst_cnt=2):
 //   clk        /‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___/‾‾‾\___/
@@ -35,12 +35,12 @@ module sdram
     // SDRAM side interface (16-bit data bus)
     inout      [15:0] SDRAM_DQ,
     output     [12:0] SDRAM_A,
-    output reg [1:0]  SDRAM_DQM,
+    output     [1:0]  SDRAM_DQM,
     output reg [1:0]  SDRAM_BA,
     output            SDRAM_nWE,
     output            SDRAM_nRAS,
     output            SDRAM_nCAS,
-    output            SDRAM_nCS,    // always 0
+    output reg        SDRAM_nCS,
     output            SDRAM_CKE,    // always 1
 
     // Logic side interface (32-bit)
@@ -49,12 +49,13 @@ module sdram
     input             nce,            // for x2 wrapper, 1: do not accept new request or auto-refresh 
     input             refresh_allowed,      // set to 1 to allow auto-refresh
     output            busy,
+    input       [1:0] sdram_size,    // 1/2/3 = 32/64/128MB; 0 uses 32MB geometry
 
     // 3 requesters, 0 has highest priority (valid/ready handshake)
     input             valid0,       // request valid (held until ready)
     output            ready0,       // 1-cycle pulse: request accepted
     input             wr0,          // 1: write (single dword), 0: read
-    input      [24:0] addr0,        // dword address (bits [1:0] ignored)
+    input      [26:0] addr0,        // byte address (bits [1:0] ignored)
     input      [31:0] din0,         // 32-bit write data
     output     [31:0] dout0,        // 32-bit read data
     input       [3:0] be0,          // byte enable
@@ -65,7 +66,7 @@ module sdram
     input             valid1,
     output            ready1,
     input             wr1,
-    input      [24:0] addr1,
+    input      [26:0] addr1,
     input      [31:0] din1,
     output     [31:0] dout1,
     input       [3:0] be1,
@@ -76,7 +77,7 @@ module sdram
     input             valid2,
     output            ready2,
     input             wr2,
-    input      [24:0] addr2,
+    input      [26:0] addr2,
     input      [31:0] din2,
     output     [31:0] dout2,
     input       [3:0] be2,
@@ -150,10 +151,13 @@ always @(posedge clk) dq_r <= dq_in;
 // Command/address
 reg [2:0]  cmd;
 reg [12:0] a;
+reg [1:0]  dqm_mask;
 assign {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} = cmd;
 assign SDRAM_A  = a;
+// MiSTer SDRAM modules repurpose the DQM connector pins as the upper
+// address bits. Drive real byte masks only on conventional SDRAM wiring.
+assign SDRAM_DQM = HAS_DQM ? dqm_mask : a[12:11];
 assign SDRAM_CKE= 1'b1;
-assign SDRAM_nCS= 1'b0;
 
 // Per-port ready pulse (1 cycle, request accepted)
 reg [2:0] ready_pulse;
@@ -214,10 +218,13 @@ localparam integer REFRESH_CNT_W = (REFRESH_CYCLES < 2) ? 1 : $clog2(REFRESH_CYC
 reg cfg_now;
 
 reg [4:0]  cycle;             // small scheduler counter (saturates)
-reg [24:0] addr_buf;
+reg [26:0] addr_buf;
 reg [31:0] din_buf;
 reg [3:0]  be_buf;
 reg [1:0]  req_id_buf;
+reg        req_large_buf;
+reg        req_chip_buf;
+reg        init_chip;
 
 reg [REFRESH_CNT_W-1:0] refresh_cnt;
 reg        need_refresh;
@@ -226,7 +233,7 @@ reg        need_refresh;
 reg [4:0]  rd_total_halfs;    // = 2 * effective dword count (<= 30)
 reg [4:0]  rd_issued;         // # of CAS commands already issued
 reg [4:0]  rd_received;       // # of 16-bit words captured from dq
-reg [7:0]  rd_col_base;       // starting dword column (0..255)
+reg [8:0]  rd_col_base;       // starting dword column (0..511)
 reg [15:0] rd_lo16;           // latch low-half before composing 32-bit
 reg [1:0]  rmw_issued;
 reg [1:0]  rmw_received;
@@ -258,7 +265,7 @@ end
 always @(posedge clk) begin
     automatic reg new_req;
     reg [1:0] req_id;
-    reg [24:0] req_addr;
+    reg [26:0] req_addr;
     reg [31:0] req_din;
     reg [3:0] req_be;
     reg req_wr;
@@ -266,7 +273,7 @@ always @(posedge clk) begin
 
     // defaults each cycle
     cmd               <= CMD_NOP;
-    SDRAM_DQM         <= 2'b00;
+    dqm_mask          <= 2'b00;
     data_resp_pulse  <= 1'b0;
     burst_done_pulse  <= 1'b0;
     ready_pulse    <= 3'b000;
@@ -315,6 +322,7 @@ always @(posedge clk) begin
     end
 
     CONFIG: begin
+        SDRAM_nCS <= init_chip;
         // t=0: PRECHG ALL
         if (cycle == 5'd0) begin
             cmd   <= CMD_PreCharge;
@@ -335,9 +343,16 @@ always @(posedge clk) begin
         end
         // t=...+T_MRD: done
         if (cycle == (T_RP+T_RC+T_RC+T_MRD)) begin
-            state      <= IDLE;
-            busy_buf   <= 1'b0;
-            refresh_cnt<= 0;
+            if ((sdram_size == 2'd3) && !init_chip) begin
+                init_chip <= 1'b1;
+                cycle <= 5'd0;
+            end else begin
+                init_chip <= 1'b0;
+                SDRAM_nCS <= 1'b0;
+                state <= IDLE;
+                busy_buf <= 1'b0;
+                refresh_cnt <= 0;
+            end
         end
     end
 
@@ -346,6 +361,7 @@ always @(posedge clk) begin
         if (need_refresh && refresh_allowed) begin
             // Refresh takes priority over new requests to prevent starvation
             cmd         <= CMD_AutoRefresh;
+            SDRAM_nCS   <= 1'b0;
             refresh_cnt <= 0;
             busy_buf    <= 1'b1;
             cycle       <= 5'd1;
@@ -356,12 +372,15 @@ always @(posedge clk) begin
             din_buf        <= req_din;
             be_buf         <= req_be;
             req_id_buf     <= req_id;
+            req_large_buf  <= sdram_size[1];
+            req_chip_buf   <= (sdram_size == 2'd3) && req_addr[26];
             ready_pulse[req_id] <= 1'b1;
 
             // ACT to selected bank/row
             cmd       <= CMD_BankActivate;
-            SDRAM_BA  <= req_addr[24:23];
-            a         <= req_addr[22:10];     // row
+            SDRAM_nCS <= (sdram_size == 2'd3) && req_addr[26];
+            SDRAM_BA  <= sdram_size[1] ? req_addr[25:24] : req_addr[24:23];
+            a         <= sdram_size[1] ? req_addr[23:11] : req_addr[22:10];
             busy_buf  <= 1'b1;
             cycle     <= 5'd1;
 
@@ -396,8 +415,8 @@ always @(posedge clk) begin
                 end
             end else begin
                 automatic reg [3:0] eff_burst;
-                // Compute effective burst length clamped to row end (256 dword columns per row)
-                rd_col_base     <= req_addr[9:2];     // dword column
+                // A 32MB chip has 256 dword columns; 64MB chips have 512.
+                rd_col_base     <= sdram_size[1] ? req_addr[10:2] : {1'b0, req_addr[9:2]};
                 eff_burst       = (req_burst == 0) ? 1 : req_burst;
                 rd_total_halfs  <= {eff_burst,1'b0};     // *2
                 rd_issued       <= 5'd0;
@@ -412,13 +431,16 @@ always @(posedge clk) begin
     READ: begin
         // Issue CAS READ one per cycle once T_RCD reached
         if ((cycle >= T_RCD) && (rd_issued < rd_total_halfs)) begin
-            automatic reg [8:0] col16;
+            automatic reg [9:0] col16;
             cmd      <= CMD_Read;
-            SDRAM_BA <= addr_buf[24:23];
+            SDRAM_nCS <= req_chip_buf;
+            SDRAM_BA <= req_large_buf ? addr_buf[25:24] : addr_buf[24:23];
             // Column: {dword_col + (rd_issued>>1), half_bit}
-            // A[12:0] = {A12..A11=0, A10=auto-pre(last half), A9=0, A8..A0=column[8:0]}
+            // 64MB chips add column A9; A10 remains auto-precharge.
             col16     = { (rd_col_base + (rd_issued[4:1])), rd_issued[0] };
-            a         <= {2'b00, (rd_issued == rd_total_halfs-1), 1'b0, col16};
+            a         <= req_large_buf
+                       ? {2'b00, (rd_issued == rd_total_halfs-1), col16}
+                       : {2'b00, (rd_issued == rd_total_halfs-1), 1'b0, col16[8:0]};
             rd_issued <= rd_issued + 5'd1;
         end
 
@@ -450,15 +472,18 @@ always @(posedge clk) begin
     // Boards without DQM must read the original dword and merge bytes locally.
     RMW_READ: begin
         if ((cycle >= T_RCD) && (rmw_issued < rmw_total_reads)) begin
-            automatic reg [8:0] col16;
+            automatic reg [9:0] col16;
             automatic reg       half_sel;
             half_sel = (rmw_read_halfs == 2'b10) ? 1'b1 :
                        (rmw_read_halfs == 2'b01) ? 1'b0 :
                        rmw_issued[0];
             cmd      <= CMD_Read;
-            SDRAM_BA <= addr_buf[24:23];
-            col16    = {addr_buf[9:2], half_sel};
-            a        <= {2'b00, (rmw_issued == rmw_total_reads-1), 1'b0, col16};
+            SDRAM_nCS <= req_chip_buf;
+            SDRAM_BA <= req_large_buf ? addr_buf[25:24] : addr_buf[24:23];
+            col16    = {req_large_buf ? addr_buf[10:2] : {1'b0, addr_buf[9:2]}, half_sel};
+            a        <= req_large_buf
+                      ? {2'b00, (rmw_issued == rmw_total_reads-1), col16}
+                      : {2'b00, (rmw_issued == rmw_total_reads-1), 1'b0, col16[8:0]};
             rmw_issued <= rmw_issued + 2'd1;
         end
 
@@ -493,8 +518,9 @@ always @(posedge clk) begin
     RMW_ACT: begin
         if (cycle == 5'd0) begin
             cmd      <= CMD_BankActivate;
-            SDRAM_BA <= addr_buf[24:23];
-            a        <= addr_buf[22:10];
+            SDRAM_nCS <= req_chip_buf;
+            SDRAM_BA <= req_large_buf ? addr_buf[25:24] : addr_buf[24:23];
+            a        <= req_large_buf ? addr_buf[23:11] : addr_buf[22:10];
             cycle    <= 5'd1;
             state    <= WRITE;
         end
@@ -506,9 +532,12 @@ always @(posedge clk) begin
         // low half at T_RCD
         if (cycle == T_RCD && wr_halfs[0]) begin
             cmd      <= CMD_Write;
-            SDRAM_BA <= addr_buf[24:23];
-            a        <= {2'b00, !wr_halfs[1]/*AP if final*/, 1'b0, {addr_buf[9:2], 1'b0}};
-            SDRAM_DQM<= HAS_DQM ? {~be_buf[1], ~be_buf[0]} : 2'b00;
+            SDRAM_nCS <= req_chip_buf;
+            SDRAM_BA <= req_large_buf ? addr_buf[25:24] : addr_buf[24:23];
+            a        <= req_large_buf
+                      ? {2'b00, !wr_halfs[1]/*AP if final*/, addr_buf[10:2], 1'b0}
+                      : {2'b00, !wr_halfs[1]/*AP if final*/, 1'b0, addr_buf[9:2], 1'b0};
+            dqm_mask <= {~be_buf[1], ~be_buf[0]};
             dq_out   <= din_buf[15:0];
             dq_oen   <= 1'b0;
         end
@@ -517,9 +546,12 @@ always @(posedge clk) begin
         if ((cycle == T_RCD && !wr_halfs[0] && wr_halfs[1]) ||
             (cycle == (T_RCD+1) && wr_halfs == 2'b11)) begin
             cmd      <= CMD_Write;
-            SDRAM_BA <= addr_buf[24:23];
-            a        <= {2'b00, 1'b1/*AP*/, 1'b0, {addr_buf[9:2], 1'b1}};
-            SDRAM_DQM<= HAS_DQM ? {~be_buf[3], ~be_buf[2]} : 2'b00;
+            SDRAM_nCS <= req_chip_buf;
+            SDRAM_BA <= req_large_buf ? addr_buf[25:24] : addr_buf[24:23];
+            a        <= req_large_buf
+                      ? {2'b00, 1'b1/*AP*/, addr_buf[10:2], 1'b1}
+                      : {2'b00, 1'b1/*AP*/, 1'b0, addr_buf[9:2], 1'b1};
+            dqm_mask <= {~be_buf[3], ~be_buf[2]};
             dq_out   <= din_buf[31:16];
             dq_oen   <= 1'b0;
         end
@@ -538,7 +570,12 @@ always @(posedge clk) begin
     end
 
     REFRESH: begin
+        if ((cycle == 5'd1) && (sdram_size == 2'd3)) begin
+            cmd <= CMD_AutoRefresh;
+            SDRAM_nCS <= 1'b1;
+        end
         if (cycle == T_RC) begin
+            SDRAM_nCS <= 1'b0;
             state    <= IDLE;
             busy_buf <= 1'b0;
         end
@@ -552,8 +589,9 @@ always @(posedge clk) begin
         state      <= INIT;
         busy_buf   <= 1'b1;
         dq_oen     <= 1'b1;
-        SDRAM_DQM  <= 2'b00;
+        dqm_mask   <= 2'b00;
         SDRAM_BA   <= 2'b00;
+        SDRAM_nCS  <= 1'b0;
         a          <= 13'd0;
         cmd        <= CMD_NOP;
 
@@ -565,6 +603,9 @@ always @(posedge clk) begin
         rmw_read_halfs <= 2'b00;
         rmw_old_data <= 32'd0;
         wr_halfs <= 2'b11;
+        req_large_buf <= 1'b0;
+        req_chip_buf <= 1'b0;
+        init_chip <= 1'b0;
 
         ready_pulse <= 3'b000;
 

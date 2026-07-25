@@ -28,12 +28,13 @@ module sdram
     input             nce,
     input             refresh_allowed,
     output            busy,
+    input       [1:0] sdram_size,
 
     // Port 0 - higher priority (valid/ready handshake)
     input             valid0,       // request valid (held until ready)
     output            ready0,       // 1-cycle pulse: request accepted
     input             wr0,          // 1: write, 0: read
-    input      [24:0] addr0,        // address
+    input      [26:0] addr0,        // byte address
     input      [31:0] din0,         // data input
     output reg [31:0] dout0,        // data output
     input       [3:0] be0,          // byte enable
@@ -45,7 +46,7 @@ module sdram
     input             valid1,
     output            ready1,
     input             wr1,
-    input      [24:0] addr1,
+    input      [26:0] addr1,
     input      [31:0] din1,
     output reg [31:0] dout1,
     input       [3:0] be1,
@@ -57,7 +58,7 @@ module sdram
     input             valid2,
     output            ready2,
     input             wr2,
-    input      [24:0] addr2,
+    input      [26:0] addr2,
     input      [31:0] din2,
     output reg [31:0] dout2,
     input       [3:0] be2,
@@ -67,7 +68,7 @@ module sdram
 );
 
 // Expose for Verilator C++ testbench via hierarchy access
-reg [15:0] mem [0:16*1024*1024-1] /* verilator public_flat_rw */ ;  // 32MB of memory
+reg [15:0] mem [0:64*1024*1024-1] /* verilator public_flat_rw */ ;  // 128MB maximum
 
 // Fast simulation mode: 1-cycle response, no SDRAM timing
 reg fast_mem;
@@ -87,7 +88,7 @@ localparam RAS = 1;
 localparam CAS0 = 2;
 localparam CAS1 = 3;
 
-reg [24:1] addr;
+reg [26:1] addr;
 reg [31:0] din;
 reg wr;
 reg [3:0] be;
@@ -103,23 +104,23 @@ assign ready2 = ready_pulse[2];
 
 // Fast-mode burst state: one active burst at a time
 reg        fast_burst_active = 0;
-reg [24:0] fast_burst_addr;
+reg [26:0] fast_burst_addr;
 reg [3:0]  fast_burst_rem;   // remaining DWORDs (including current)
 reg [1:0]  fast_burst_port;
 
 // Fast-mode helper: start a read (burst or single)
-task fast_read(input [24:0] a, input [3:0] bcnt, input [1:0] p);
+task fast_read(input [26:0] a, input [3:0] bcnt, input [1:0] p);
 begin
     if (p == 0) begin
-        dout0 <= {mem[{a[24:2],1'b1}], mem[{a[24:2],1'b0}]};
+        dout0 <= {mem[{a[26:2],1'b1}], mem[{a[26:2],1'b0}]};
         resp_valid0 <= 1;
         burst_done0 <= (bcnt <= 1);
     end else if (p == 1) begin
-        dout1 <= {mem[{a[24:2],1'b1}], mem[{a[24:2],1'b0}]};
+        dout1 <= {mem[{a[26:2],1'b1}], mem[{a[26:2],1'b0}]};
         resp_valid1 <= 1;
         burst_done1 <= (bcnt <= 1);
     end else begin
-        dout2 <= {mem[{a[24:2],1'b1}], mem[{a[24:2],1'b0}]};
+        dout2 <= {mem[{a[26:2],1'b1}], mem[{a[26:2],1'b0}]};
         resp_valid2 <= 1;
         burst_done2 <= (bcnt <= 1);
     end
@@ -133,16 +134,16 @@ begin
 end
 endtask
 
-task fast_write(input [24:0] a, input [31:0] d, input [3:0] b, input [1:0] p);
+task fast_write(input [26:0] a, input [31:0] d, input [3:0] b, input [1:0] p);
 begin
-    if (b[0]) mem[{a[24:2],1'b0}][7:0]  <= d[7:0];
-    if (b[1]) mem[{a[24:2],1'b0}][15:8] <= d[15:8];
-    if (b[2]) mem[{a[24:2],1'b1}][7:0]  <= d[23:16];
-    if (b[3]) mem[{a[24:2],1'b1}][15:8] <= d[31:24];
+    if (b[0]) mem[{a[26:2],1'b0}][7:0]  <= d[7:0];
+    if (b[1]) mem[{a[26:2],1'b0}][15:8] <= d[15:8];
+    if (b[2]) mem[{a[26:2],1'b1}][7:0]  <= d[23:16];
+    if (b[3]) mem[{a[26:2],1'b1}][15:8] <= d[31:24];
     // Debug: trace writes to BIOS code area 0xF6480-0xF649F
-    if ({a[24:2],1'b0} >= 24'h07B240 && {a[24:2],1'b0} <= 24'h07B24F)
+    if ({a[26:2],1'b0} >= 26'h07B240 && {a[26:2],1'b0} <= 26'h07B24F)
         $display("%0t: SDRAM FAST_WRITE addr=0x%06X data=0x%08X be=%04b port=%0d",
-                 $time, {a[24:2],2'b00}, d, b, p);
+                 $time, {a[26:2],2'b00}, d, b, p);
     ready_pulse[p] <= 1;
 end
 endtask
@@ -161,15 +162,15 @@ always @(posedge clk) begin
         // Continue active burst first (1 DWORD per cycle)
         if (fast_burst_active) begin
             if (fast_burst_port == 0) begin
-                dout0 <= {mem[{fast_burst_addr[24:2],1'b1}], mem[{fast_burst_addr[24:2],1'b0}]};
+                dout0 <= {mem[{fast_burst_addr[26:2],1'b1}], mem[{fast_burst_addr[26:2],1'b0}]};
                 resp_valid0 <= 1;
                 burst_done0 <= (fast_burst_rem <= 1);
             end else if (fast_burst_port == 1) begin
-                dout1 <= {mem[{fast_burst_addr[24:2],1'b1}], mem[{fast_burst_addr[24:2],1'b0}]};
+                dout1 <= {mem[{fast_burst_addr[26:2],1'b1}], mem[{fast_burst_addr[26:2],1'b0}]};
                 resp_valid1 <= 1;
                 burst_done1 <= (fast_burst_rem <= 1);
             end else begin
-                dout2 <= {mem[{fast_burst_addr[24:2],1'b1}], mem[{fast_burst_addr[24:2],1'b0}]};
+                dout2 <= {mem[{fast_burst_addr[26:2],1'b1}], mem[{fast_burst_addr[26:2],1'b0}]};
                 resp_valid2 <= 1;
                 burst_done2 <= (fast_burst_rem <= 1);
             end
@@ -198,7 +199,7 @@ always @(posedge clk) begin
     case (state)
     IDLE: begin
         if (valid0) begin
-            addr <= {addr0[24:2],1'b0};  // convert to 16-bit word address
+            addr <= {addr0[26:2],1'b0};  // convert to 16-bit word address
             din <= din0;
             wr <= wr0;
             be <= be0;
@@ -208,7 +209,7 @@ always @(posedge clk) begin
             ready_pulse[0] <= 1;
             state <= RAS;
         end else if (valid1) begin
-            addr <= {addr1[24:2],1'b0};
+            addr <= {addr1[26:2],1'b0};
             din <= din1;
             wr <= wr1;
             be <= be1;
@@ -218,7 +219,7 @@ always @(posedge clk) begin
             ready_pulse[1] <= 1;
             state <= RAS;
         end else if (valid2) begin
-            addr <= {addr2[24:2],1'b0};
+            addr <= {addr2[26:2],1'b0};
             din <= din2;
             wr <= wr2;
             be <= be2;

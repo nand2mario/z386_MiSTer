@@ -5,6 +5,7 @@
 #include "verilated.h"
 #include "verilated_fst_c.h"
 #include <SDL.h>
+#include <png.h>
 
 #include <algorithm>
 #include <array>
@@ -769,8 +770,39 @@ static void dump_fb(const char* path) {
 	printf("   FB extent: nonzero=%ld range=[0x%zx..0x%zx]\n", nz, (size_t)(nz?lo:0), hi);
 }
 
+static bool dump_screen_png(const fs::path& path, int width, int height) {
+	FILE* file = fopen(path.c_str(), "wb");
+	if (!file) return false;
+	png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+	png_infop info = png ? png_create_info_struct(png) : nullptr;
+	vector<uint8_t> row(static_cast<size_t>(width) * 3);
+	if (!png || !info || setjmp(png_jmpbuf(png))) {
+		if (png) png_destroy_write_struct(&png, info ? &info : nullptr);
+		fclose(file);
+		return false;
+	}
+	png_init_io(png, file);
+	png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGB,
+	             PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+	             PNG_FILTER_TYPE_DEFAULT);
+	png_write_info(png, info);
+	for (int y = 0; y < height; ++y) {
+		for (int x = 0; x < width; ++x) {
+			const Pixel& pixel = presentbuffer[y * H_RES + x];
+			row[x * 3 + 0] = pixel.r;
+			row[x * 3 + 1] = pixel.g;
+			row[x * 3 + 2] = pixel.b;
+		}
+		png_write_row(png, row.data());
+	}
+	png_write_end(png, nullptr);
+	png_destroy_write_struct(&png, &info);
+	fclose(file);
+	return true;
+}
+
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--enter-at sim_time] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle)\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--enter-at sim_time] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle)\n";
 }
 
 int main(int argc, char** argv) {
@@ -786,6 +818,14 @@ int main(int argc, char** argv) {
 	string restore_path;
 	vector<uint64_t> enter_cycles;
 	vector<uint64_t> ctrl_alt_del_cycles;
+	bool log_eip_enabled = false;
+	uint16_t log_eip_cs = 0;
+	uint32_t log_eip_offset = 0;
+	string screenshot_dir;
+	uint64_t screenshot_interval_cycles = 0;
+	uint64_t next_screenshot_cycle = 0;
+	string stop_on_text;
+	unsigned ram_mb = 16;
 
 	for (int i = 1; i < argc; ++i) {
 		string arg = argv[i];
@@ -810,12 +850,34 @@ int main(int argc, char** argv) {
 			boot0_path = argv[++i];
 		} else if (arg == "--boot1" && i + 1 < argc) {
 			boot1_path = argv[++i];
+		} else if (arg == "--ram-mb" && i + 1 < argc) {
+			ram_mb = static_cast<unsigned>(std::stoul(argv[++i]));
+			if (ram_mb != 16 && ram_mb != 32 && ram_mb != 64 && ram_mb != 128) {
+				cerr << "--ram-mb must be 16, 32, 64, or 128\n";
+				return 1;
+			}
 		} else if (arg == "--enter-at" && i + 1 < argc) {
 			enter_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--ctrl-alt-del-at" && i + 1 < argc) {
 			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--screen-at" && i + 1 < argc) {
 			screen_check_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
+		} else if (arg == "--log-eip" && i + 1 < argc) {
+			string marker = argv[++i];
+			size_t separator = marker.find(':');
+			if (separator == string::npos) {
+				cerr << "--log-eip requires hexadecimal CS:EIP\n";
+				return 1;
+			}
+			log_eip_cs = static_cast<uint16_t>(std::stoul(marker.substr(0, separator), nullptr, 16));
+			log_eip_offset = static_cast<uint32_t>(std::stoul(marker.substr(separator + 1), nullptr, 16));
+			log_eip_enabled = true;
+		} else if (arg == "--screenshot-dir" && i + 1 < argc) {
+			screenshot_dir = argv[++i];
+		} else if (arg == "--screenshot-interval" && i + 1 < argc) {
+			screenshot_interval_cycles = std::stoull(argv[++i]) / 2;
+		} else if (arg == "--stop-on-text" && i + 1 < argc) {
+			stop_on_text = argv[++i];
 		} else if (arg == "--ide") {
 			g_ide_debug = true;
 		} else if (arg == "--no-ide") {
@@ -847,6 +909,11 @@ int main(int argc, char** argv) {
 
 	if (!checkpoint_dir.empty() && checkpoint_interval_sec == 0) {
 		checkpoint_interval_sec = 600;
+	}
+	if (!screenshot_dir.empty()) {
+		if (screenshot_interval_cycles == 0) screenshot_interval_cycles = 12500000;
+		fs::create_directories(screenshot_dir);
+		next_screenshot_cycle = screenshot_interval_cycles;
 	}
 
 	for (uint64_t cycle : enter_cycles) {
@@ -960,7 +1027,10 @@ int main(int argc, char** argv) {
 	tb.clk_sys = 0;
 	tb.clk_audio = 0;
 	tb.reset = 1;
-	tb.status = 0;
+	unsigned ram_size_code = (ram_mb == 16) ? 0 :
+	                         (ram_mb == 32) ? 1 :
+	                         (ram_mb == 64) ? 2 : 3;
+	tb.status = uint64_t{ram_size_code} << 29;
 	tb.ioctl_download = 0;
 	tb.ioctl_index = 0;
 	tb.ioctl_wr = 0;
@@ -1002,6 +1072,7 @@ int main(int argc, char** argv) {
 	bool prev_hs = false;
 	bool prev_de = false;
 	bool bios_dbg_wr_prev = false;
+	bool log_eip_prev = false;
 	int sim_soft_reset_cycles = 0;
 	bool gui_r_soft_reset_active = false;
 	bool gui_c_checkpoint_active = false;
@@ -1136,6 +1207,14 @@ int main(int argc, char** argv) {
 			     << " lines=" << frame_line_max
 			     << " xmax=" << frame_x_max << "\n";
 			std::copy(std::begin(screenbuffer), std::end(screenbuffer), std::begin(presentbuffer));
+			if (!screenshot_dir.empty() && cycle >= next_screenshot_cycle) {
+				fs::path path = fs::path(screenshot_dir) /
+				                ("screen_" + std::to_string(sim_time) + ".png");
+				if (dump_screen_png(path, resolution_x, resolution_y))
+					cout << sim_time << ": screenshot " << path.string() << "\n";
+				while (next_screenshot_cycle <= cycle)
+					next_screenshot_cycle += screenshot_interval_cycles;
+			}
 			std::fill(std::begin(screenbuffer), std::end(screenbuffer), Pixel{0xff, 0x00, 0x00, 0x00});
 			frame_pix_cnt = 0;
 			frame_x_max = 0;
@@ -1146,6 +1225,10 @@ int main(int argc, char** argv) {
 					cout << sim_time << ": VGA text update\n";
 					dump_nonempty_rows(screen);
 					last_console_text = screen;
+				}
+				if (!stop_on_text.empty() && screen.find(stop_on_text) != std::string::npos) {
+					cout << sim_time << ": stop-on-text matched [" << stop_on_text << "]\n";
+					running = false;
 				}
 				next_console_text_check = cycle + 1000000ull;
 			}
@@ -1562,6 +1645,13 @@ int main(int argc, char** argv) {
 		}
 
 		uint32_t linear_ip = tb.dbg_cs_base + tb.dbg_eip;
+		bool log_eip_now = log_eip_enabled && tb.dbg_cs == log_eip_cs &&
+		                    tb.dbg_eip == log_eip_offset;
+		if (log_eip_now && !log_eip_prev) {
+			cout << sim_time << ": EIP_MARKER " << std::hex << tb.dbg_cs << ":"
+			     << tb.dbg_eip << std::dec << "\n";
+		}
+		log_eip_prev = log_eip_now;
 		if (!saw_boot_sector && linear_ip >= 0x7C00 && linear_ip < 0x7E00) {
 			saw_boot_sector = true;
 			cout << sim_time << ": boot sector execution at " << std::hex
