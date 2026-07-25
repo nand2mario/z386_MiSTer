@@ -238,6 +238,7 @@ reg [3:0]   boot_state;
 reg [31:0]  boot_addr;
 reg         boot_done = 1'b0;
 reg         cpu_reset_n;
+reg  [3:0]  cpu_warm_reset_count;
 reg [63:0]  boot_read_data;
 reg [31:0]  boot_dest_addr;
 reg  [1:0]  boot_write_phase;
@@ -409,6 +410,7 @@ wire  [5:0] video_rd_seg;
 // ============================================================================
 wire [31:0] dma_snoop_addr;
 wire        dma_snoop_valid;
+wire        cpu_triple_fault_reset;
 
 z386 #(
     .PROTECT_UMA_ROM(1),
@@ -438,7 +440,8 @@ z386 #(
     .dbg_EIP           (debug_cpu_eip),
     .dbg_CS_base       (debug_cpu_cs_base),
     .dbg_pe            (debug_cpu_pe),
-    .dbg_vm            (debug_cpu_vm)
+    .dbg_vm            (debug_cpu_vm),
+    .triple_fault_reset(cpu_triple_fault_reset)
 );
 
 // CPU data in mux: INTA > IO > Memory
@@ -1053,7 +1056,7 @@ wire kbd_ps2_dat;
 wire mouse_ps2_clk;
 wire mouse_ps2_dat;
 wire ps2_reset_n;
-assign software_reset = ~ps2_reset_n;  // active-high reset from keyboard controller 0xFE command
+assign software_reset = ~ps2_reset_n;
 
 ps2 ps2
 (
@@ -1454,6 +1457,7 @@ always @(posedge clk_sys) begin
         boot_state <= BOOT_IDLE;
         boot_done <= 1'b0;
         cpu_reset_n <= 0;
+        cpu_warm_reset_count <= 4'd0;
         boot_addr <= 32'd0;
         boot_read_data <= 64'd0;
         boot_dest_addr <= 32'd0;
@@ -1549,7 +1553,20 @@ always @(posedge clk_sys) begin
             
             BOOT_COMPLETE: begin
                 boot_done <= 1;
-                cpu_reset_n <= 1'b1;
+
+                // A 386 shutdown bus cycle asks the motherboard to pulse the
+                // CPU RESET pin. Preserve RAM, CMOS, and peripheral state so
+                // the BIOS can follow the warm-reset vector prepared by the
+                // software that deliberately caused the triple fault.
+                if (cpu_triple_fault_reset) begin
+                    cpu_reset_n <= 1'b0;
+                    cpu_warm_reset_count <= 4'hf;
+                end else if (cpu_warm_reset_count != 4'd0) begin
+                    cpu_warm_reset_count <= cpu_warm_reset_count - 4'd1;
+                    cpu_reset_n <= cpu_warm_reset_count == 4'd1;
+                end else begin
+                    cpu_reset_n <= 1'b1;
+                end
 				debug_boot_stage <= 5;
             end
         endcase
