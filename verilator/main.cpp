@@ -93,6 +93,8 @@ struct ScheduledPs2Bytes {
 
 static std::vector<ScheduledPs2Bytes> ps2_events;
 static size_t next_ps2_event = 0;
+static std::vector<ScheduledPs2Bytes> mouse_events;
+static size_t next_mouse_event = 0;
 static deque<uint8_t> kbd_scancode_queue;
 static deque<uint8_t> mouse_byte_queue;
 static uint64_t last_kbd_byte_time = 0;
@@ -421,7 +423,8 @@ static void queue_sdl_key(SDL_Keycode key, bool pressed) {
 	queue_ps2_bytes(seq);
 }
 
-static void queue_mouse_packet(int dx, int dy, uint8_t buttons) {
+static std::vector<uint8_t> encode_mouse_packets(int dx, int dy, uint8_t buttons) {
+	std::vector<uint8_t> bytes;
 	bool first = true;
 	while (first || dx != 0 || dy != 0) {
 		first = false;
@@ -430,12 +433,18 @@ static void queue_mouse_packet(int dx, int dy, uint8_t buttons) {
 		uint8_t flags = 0x08 | (buttons & 0x07);
 		if (step_x < 0) flags |= 0x10;
 		if (step_y < 0) flags |= 0x20;
-		mouse_byte_queue.push_back(flags);
-		mouse_byte_queue.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_x)));
-		mouse_byte_queue.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_y)));
+		bytes.push_back(flags);
+		bytes.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_x)));
+		bytes.push_back(static_cast<uint8_t>(static_cast<int8_t>(step_y)));
 		dx -= step_x;
 		dy -= step_y;
 	}
+	return bytes;
+}
+
+static void queue_mouse_packet(int dx, int dy, uint8_t buttons) {
+	auto bytes = encode_mouse_packets(dx, dy, buttons);
+	mouse_byte_queue.insert(mouse_byte_queue.end(), bytes.begin(), bytes.end());
 }
 
 static void handle_kbd_host_cmd(uint8_t cmd) {
@@ -802,7 +811,7 @@ static bool dump_screen_png(const fs::path& path, int width, int height) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--enter-at sim_time] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle)\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--enter-at sim_time] [--key-at sim_time:key] [--mouse-at sim_time:dx:dy[:buttons]] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle; keys: up, down, left, right, enter, escape; mouse buttons are bits L/R/M)\n";
 }
 
 int main(int argc, char** argv) {
@@ -817,6 +826,8 @@ int main(int argc, char** argv) {
 	size_t checkpoint_keep = 6;
 	string restore_path;
 	vector<uint64_t> enter_cycles;
+	vector<std::pair<uint64_t, SDL_Keycode>> key_events;
+	vector<std::tuple<uint64_t, int, int, uint8_t>> mouse_packet_events;
 	vector<uint64_t> ctrl_alt_del_cycles;
 	bool log_eip_enabled = false;
 	uint16_t log_eip_cs = 0;
@@ -858,6 +869,47 @@ int main(int argc, char** argv) {
 			}
 		} else if (arg == "--enter-at" && i + 1 < argc) {
 			enter_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
+		} else if (arg == "--key-at" && i + 1 < argc) {
+			string event = argv[++i];
+			size_t separator = event.find(':');
+			if (separator == string::npos) {
+				cerr << "--key-at requires sim_time:key\n";
+				return 1;
+			}
+			static const std::map<string, SDL_Keycode> keys = {
+				{"up", SDLK_UP}, {"down", SDLK_DOWN},
+				{"left", SDLK_LEFT}, {"right", SDLK_RIGHT},
+				{"enter", SDLK_RETURN}, {"escape", SDLK_ESCAPE},
+			};
+			auto key = keys.find(event.substr(separator + 1));
+			if (key == keys.end()) {
+				cerr << "unsupported --key-at key: " << event.substr(separator + 1) << "\n";
+				return 1;
+			}
+			key_events.push_back({std::stoull(event.substr(0, separator)) / 2, key->second});
+		} else if (arg == "--mouse-at" && i + 1 < argc) {
+			string event = argv[++i];
+			vector<string> fields;
+			size_t start = 0;
+			while (true) {
+				size_t separator = event.find(':', start);
+				fields.push_back(event.substr(start, separator - start));
+				if (separator == string::npos) break;
+				start = separator + 1;
+			}
+			if (fields.size() != 3 && fields.size() != 4) {
+				cerr << "--mouse-at requires sim_time:dx:dy[:buttons]\n";
+				return 1;
+			}
+			int dx = std::stoi(fields[1], nullptr, 0);
+			int dy = std::stoi(fields[2], nullptr, 0);
+			unsigned buttons = fields.size() == 4 ? std::stoul(fields[3], nullptr, 0) : 0;
+			if (buttons > 7) {
+				cerr << "--mouse-at buttons must be a 3-bit L/R/M mask\n";
+				return 1;
+			}
+			mouse_packet_events.push_back({std::stoull(fields[0]) / 2, dx, dy,
+			                               static_cast<uint8_t>(buttons)});
 		} else if (arg == "--ctrl-alt-del-at" && i + 1 < argc) {
 			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--screen-at" && i + 1 < argc) {
@@ -925,6 +977,15 @@ int main(int argc, char** argv) {
 			ps2_events.push_back({cycle, bytes});
 		}
 	}
+	for (const auto& [cycle, key] : key_events) {
+		auto it = ps2scancodes.find(key);
+		if (it != ps2scancodes.end()) {
+			std::vector<uint8_t> bytes;
+			bytes.insert(bytes.end(), it->second.first.begin(), it->second.first.end());
+			bytes.insert(bytes.end(), it->second.second.begin(), it->second.second.end());
+			ps2_events.push_back({cycle, bytes});
+		}
+	}
 	for (uint64_t cycle : ctrl_alt_del_cycles) {
 		std::vector<uint8_t> bytes;
 		for (SDL_Keycode key : {SDLK_LCTRL, SDLK_LALT, SDLK_DELETE}) {
@@ -941,6 +1002,13 @@ int main(int argc, char** argv) {
 	}
 	std::sort(ps2_events.begin(), ps2_events.end(),
 		[](const ScheduledPs2Bytes& a, const ScheduledPs2Bytes& b) { return a.cycle < b.cycle; });
+	const std::vector<ScheduledPs2Bytes> command_line_ps2_events = ps2_events;
+	for (const auto& [cycle, dx, dy, buttons] : mouse_packet_events) {
+		mouse_events.push_back({cycle, encode_mouse_packets(dx, dy, buttons)});
+	}
+	std::sort(mouse_events.begin(), mouse_events.end(),
+		[](const ScheduledPs2Bytes& a, const ScheduledPs2Bytes& b) { return a.cycle < b.cycle; });
+	const std::vector<ScheduledPs2Bytes> command_line_mouse_events = mouse_events;
 	std::sort(screen_check_cycles.begin(), screen_check_cycles.end());
 
 	vector<uint8_t> boot0;
@@ -1143,6 +1211,11 @@ int main(int argc, char** argv) {
 	};
 
 	auto mouse_send_pre = [&](uint64_t cycle) {
+		while (next_mouse_event < mouse_events.size() && mouse_events[next_mouse_event].cycle <= cycle) {
+			const auto& bytes = mouse_events[next_mouse_event].bytes;
+			mouse_byte_queue.insert(mouse_byte_queue.end(), bytes.begin(), bytes.end());
+			next_mouse_event++;
+		}
 		if (cycle - last_mouse_byte_time > 20000 && !mouse_byte_queue.empty()) {
 			tb.sim_mouse_data = mouse_byte_queue.front();
 			mouse_byte_queue.pop_front();
@@ -1305,7 +1378,7 @@ int main(int argc, char** argv) {
 		{
 			std::ofstream out(tmp_dir / "harness.bin", ios::binary);
 			const uint32_t magic = 0x5A434B50; // ZCKP
-			const uint32_t version = 2;
+			const uint32_t version = 3;
 			write_pod(out, magic);
 			write_pod(out, version);
 			write_pod(out, sim_time);
@@ -1316,6 +1389,8 @@ int main(int argc, char** argv) {
 			write_pod(out, ddram_resp_data);
 			write_scheduled_events(out, ps2_events);
 			write_pod(out, next_ps2_event);
+			write_scheduled_events(out, mouse_events);
+			write_pod(out, next_mouse_event);
 			write_deque_u8(out, kbd_scancode_queue);
 			write_deque_u8(out, mouse_byte_queue);
 			write_pod(out, last_kbd_byte_time);
@@ -1392,7 +1467,7 @@ int main(int argc, char** argv) {
 			uint32_t version = 0;
 			read_pod(in, magic);
 			read_pod(in, version);
-			if (magic != 0x5A434B50 || (version != 1 && version != 2)) {
+			if (magic != 0x5A434B50 || (version < 1 || version > 3)) {
 				throw std::runtime_error("bad simulator checkpoint");
 			}
 			read_pod(in, sim_time);
@@ -1403,6 +1478,10 @@ int main(int argc, char** argv) {
 			read_pod(in, ddram_resp_data);
 			read_scheduled_events(in, ps2_events);
 			read_pod(in, next_ps2_event);
+			if (version >= 3) {
+				read_scheduled_events(in, mouse_events);
+				read_pod(in, next_mouse_event);
+			}
 			read_deque_u8(in, kbd_scancode_queue);
 			if (version >= 2) read_deque_u8(in, mouse_byte_queue);
 			read_pod(in, last_kbd_byte_time);
@@ -1443,6 +1522,33 @@ int main(int argc, char** argv) {
 			ide0.load(in);
 			ide1.load(in);
 		}
+
+		std::vector<ScheduledPs2Bytes> pending_events;
+		pending_events.insert(pending_events.end(), ps2_events.begin() + next_ps2_event,
+		                      ps2_events.end());
+		for (const auto& event : command_line_ps2_events) {
+			if (event.cycle > current_cycle) pending_events.push_back(event);
+		}
+		std::sort(pending_events.begin(), pending_events.end(),
+			[](const ScheduledPs2Bytes& a, const ScheduledPs2Bytes& b) {
+				return a.cycle < b.cycle;
+			});
+		ps2_events = std::move(pending_events);
+		next_ps2_event = 0;
+
+		std::vector<ScheduledPs2Bytes> pending_mouse_events;
+		pending_mouse_events.insert(pending_mouse_events.end(),
+		                            mouse_events.begin() + next_mouse_event,
+		                            mouse_events.end());
+		for (const auto& event : command_line_mouse_events) {
+			if (event.cycle > current_cycle) pending_mouse_events.push_back(event);
+		}
+		std::sort(pending_mouse_events.begin(), pending_mouse_events.end(),
+			[](const ScheduledPs2Bytes& a, const ScheduledPs2Bytes& b) {
+				return a.cycle < b.cycle;
+			});
+		mouse_events = std::move(pending_mouse_events);
+		next_mouse_event = 0;
 
 		loop_start_cycle = current_cycle + 1;
 		next_checkpoint_at = std::chrono::steady_clock::now() +
