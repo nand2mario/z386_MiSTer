@@ -46,7 +46,10 @@ module iobus_adapter (
 );
 
 // FSM: for each byte, reads take 3 cycles (ISSUE → WAIT → CAPTURE),
-// writes take 1 cycle (ISSUE only). Inactive bytes are skipped.
+// writes take an ISSUE cycle followed by a low-strobe gap.  The gap keeps
+// adjacent bytes as distinct peripheral transactions; some devices detect
+// writes by edge rather than by sampling every cycle that io_write is high.
+// Inactive bytes are skipped.
 //
 // States encode byte index (0-3) and phase:
 //   ISSUE: assert io_read/io_write with address and data
@@ -147,13 +150,13 @@ always @(posedge clk) begin
                         io_writedata <= write_data[7:0];
                     end
                 end
-                if (active_be[0] && is_read)
+                if (active_be[0])
                     state <= S_WAIT0;
                 else
                     state <= S_ISSUE1;
             end
 
-            S_WAIT0: state <= S_CAP0;  // wait for peripheral to register readdata
+            S_WAIT0: state <= is_read ? S_CAP0 : S_ISSUE1;
 
             S_CAP0: begin
                 read_accum[7:0] <= io_readdata;
@@ -173,13 +176,13 @@ always @(posedge clk) begin
                         io_writedata <= write_data[15:8];
                     end
                 end
-                if (active_be[1] && is_read)
+                if (active_be[1])
                     state <= S_WAIT1;
                 else
                     state <= S_ISSUE2;
             end
 
-            S_WAIT1: state <= S_CAP1;
+            S_WAIT1: state <= is_read ? S_CAP1 : S_ISSUE2;
 
             S_CAP1: begin
                 read_accum[15:8] <= io_readdata;
@@ -199,13 +202,13 @@ always @(posedge clk) begin
                         io_writedata <= write_data[23:16];
                     end
                 end
-                if (active_be[2] && is_read)
+                if (active_be[2])
                     state <= S_WAIT2;
                 else
                     state <= S_ISSUE3;
             end
 
-            S_WAIT2: state <= S_CAP2;
+            S_WAIT2: state <= is_read ? S_CAP2 : S_ISSUE3;
 
             S_CAP2: begin
                 read_accum[23:16] <= io_readdata;
@@ -225,13 +228,13 @@ always @(posedge clk) begin
                         io_writedata <= write_data[31:24];
                     end
                 end
-                if (active_be[3] && is_read)
+                if (active_be[3])
                     state <= S_WAIT3;
                 else
                     state <= S_DONE;
             end
 
-            S_WAIT3: state <= S_CAP3;
+            S_WAIT3: state <= is_read ? S_CAP3 : S_DONE;
 
             S_CAP3: begin
                 read_accum[31:24] <= io_readdata;

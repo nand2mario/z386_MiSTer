@@ -27,13 +27,13 @@ synthesis/
 /rtl/pll.qip
 /rtl/pll.v
 /rtl/pll/pll_0002.v
+/tests/obj_dir/
 
 # sim / sweep / build artifacts
 __pycache__/
 build_id.v
 c5_pin_model_dump.txt
 seed_sweep/
-tests/
 verilator/ckpt_mat/
 verilator/*.log
 verilator/*.wav

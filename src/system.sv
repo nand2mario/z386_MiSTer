@@ -362,7 +362,6 @@ wire [31:0] ide0_readdata;
 wire [31:0] ide1_readdata;
 wire  [7:0] joystick_readdata;
 wire  [7:0] pit_readdata;
-reg   [7:0] pit_readdata_sampled;
 wire  [7:0] ps2_readdata;
 wire  [7:0] rtc_readdata;
 wire  [7:0] uart1_readdata;
@@ -403,6 +402,10 @@ wire        vga_write;
 wire  [2:0] vga_memmode;
 wire  [5:0] video_wr_seg;
 wire  [5:0] video_rd_seg;
+wire        video_chain4;
+wire  [3:0] video_map_mask;
+wire  [1:0] video_read_plane;
+wire  [1:0] video_write_mode;
 // SVGA framebuffer descriptor wires (video_*) are now module outputs.
 
 // ============================================================================
@@ -485,7 +488,7 @@ wire [31:0] cpu_byte_addr_raw = {cpu_addr, 2'b00};
 wire is_bios_mirror_alias = &cpu_byte_addr_raw[31:18];    // 0xFFFC0000+
 wire [31:0] cpu_byte_addr = is_bios_mirror_alias
                           ? (BIOS_MIRROR_BASE + {14'd0, cpu_byte_addr_raw[17:0]})
-                          : {5'h0, cpu_byte_addr_raw[26:0]};
+                          : cpu_byte_addr_raw;
 
 // z386 owns the L1 internally, so UMA write-protect is handled at the CPU/cache
 // boundary through PROTECT_UMA_ROM. Nothing is bypassed here.
@@ -555,6 +558,7 @@ main_memory main_memory (
     .cpu_ready         (mm_ready),
     .cpu_valid         (mm_valid),
     .cpu_write         (mm_write),
+    .ram_size          (ram_size),
 
     // SDRAM interface (valid/ready)
 	.mem_addr          (mem_address),
@@ -577,6 +581,10 @@ main_memory main_memory (
 	.vga_wr_seg        (video_wr_seg),
 	.vga_rd_seg        (video_rd_seg),
 	.vga_fb_en         (vga_fb_en),
+	.vga_chain4        (video_chain4),
+	.vga_map_mask      (video_map_mask),
+	.vga_read_plane    (video_read_plane),
+	.vga_write_mode    (video_write_mode),
 	.vga_wr_done       (vga_wr_done),
 
 	// DDR3 SVGA framebuffer read/write port (muxed onto ddram_* after boot)
@@ -721,7 +729,7 @@ wire [7:0] iobus_readdata8 =
 	( floppy0_cs                             ) ? floppy0_readdata  :
 	( dma_master_cs|dma_slave_cs|dma_page_cs ) ? dma_io_readdata   :
 	( pic_master_cs|pic_slave_cs             ) ? pic_readdata      :
-	( pit_cs                                 ) ? pit_readdata_sampled :
+	( pit_cs                                 ) ? pit_readdata      :
 	( ps2_io_cs|ps2_ctl_cs                   ) ? ps2_readdata      :
 	( rtc_cs                                 ) ? rtc_readdata      :
 	( sb_cs|fm_cs                            ) ? sound_readdata    :
@@ -808,15 +816,6 @@ always @(posedge clk_sys) begin
 end
 
 assign syscfg = ctlport;
-
-always @(posedge clk_sys) begin
-    if (rst[0])
-        pit_readdata_sampled <= 8'h00;
-    else if (iobus_read && pit_cs)
-        // Sample PIT reads while the strobe is active, before the counter read
-        // side effects advance the low/high byte selection on the board build.
-        pit_readdata_sampled <= pit_readdata;
-end
 
 // iobus_adapter instantiated above (replaces old iobus module)
 
@@ -1207,6 +1206,10 @@ vga vga_inst
 	.vga_width         (video_width),
 	.vga_height        (video_height),
 	.vga_flags         (video_flags),
+	.vga_chain4        (video_chain4),
+	.vga_map_mask      (video_map_mask),
+	.vga_read_plane    (video_read_plane),
+	.vga_write_mode    (video_write_mode),
 	.vga_stride        (video_stride),
 	.vga_off           (video_off),
 	.vga_lores         (1'b0),

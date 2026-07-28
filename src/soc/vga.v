@@ -75,6 +75,10 @@ module vga
 	output reg  [8:0]   vga_stride,
 	output reg [10:0]   vga_height,
 	output reg  [3:0]   vga_flags,
+	output              vga_chain4,
+	output      [3:0]   vga_map_mask,
+	output      [1:0]   vga_read_plane,
+	output      [1:0]   vga_write_mode,
 
 	input               vga_lores,
 	input               vga_border
@@ -88,6 +92,11 @@ wire io_c_read  = io_read  & io_c_cs;
 wire io_c_write = io_write & io_c_cs;
 wire io_d_read  = io_read  & io_d_cs;
 wire io_d_write = io_write & io_d_cs;
+
+assign vga_chain4    = seq_access_chain4;
+assign vga_map_mask  = seq_map_write_enable;
+assign vga_read_plane = graph_read_map_select;
+assign vga_write_mode = graph_write_mode;
 
 reg io_b_read_last;
 always @(posedge clk_sys) if(~rst_n) io_b_read_last <= 1'b0; else if(io_b_read_last) io_b_read_last <= 1'b0; else io_b_read_last <= io_b_read;

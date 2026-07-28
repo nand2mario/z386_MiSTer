@@ -6,8 +6,9 @@ original Intel 386 microcode with performance optimizations and architectural
 extensions. Current optimizations include a faster frontend and hardwired fast
 paths for common instructions.
 
-The July 2026 build runs the Doom timedemo at 27.3 FPS, compared with 21.0 FPS
-on ao486 using the same MiSTer system.
+The 20260728 build runs the Doom timedemo at 29.7 FPS, compared with 21.0 FPS
+on ao486 using the same MiSTer system. It supports 16, 32, 64, or 128 MB of
+RAM and ET4000-compatible SVGA modes.
 
 ## Trying It
 

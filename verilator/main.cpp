@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <ctime>
 #include <deque>
@@ -27,6 +28,7 @@
 #include "verilated_save.h"
 
 #include "ide_hps.h"
+#include "control_server.h"
 #include "wav_writer.h"
 
 using std::cerr;
@@ -40,10 +42,15 @@ using std::string;
 using std::vector;
 namespace fs = std::filesystem;
 
-#include "../../12.386tang/verilator/scancode.h"
+#include "scancode.h"
 
 static constexpr int H_RES = 1600;
 static constexpr int V_RES = 900;
+#ifdef __APPLE__
+static constexpr int INITIAL_WINDOW_SCALE = 1;
+#else
+static constexpr int INITIAL_WINDOW_SCALE = 2;
+#endif
 
 struct Pixel {
 	uint8_t a;
@@ -80,11 +87,46 @@ static bool ddram_resp_valid = false;
 static uint64_t ddram_resp_data = 0;
 // SVGA framebuffer capture: the RTL writes the linear FB to DDR3 byte 0x3F800000+
 // (= FB_BASE {4'h3,6'b111110,...}), far above the 16MB ddram_mem, so capture it in a
-// dedicated buffer to dump the image the HPS scaler would display.
+// dedicated buffer to render the image the HPS scaler would display.
 static constexpr uint64_t FB_BASE_BYTE = 0x3F800000ull;
 static constexpr size_t   FB_MEM_SIZE  = 4 * 1024 * 1024;   // 64 banks * 64KB
 static std::vector<uint8_t> fb_mem(FB_MEM_SIZE, 0);
-static uint64_t fb_writes = 0;
+static std::array<Pixel, 256> fb_palette = [] {
+	std::array<Pixel, 256> palette{};
+	palette.fill(Pixel{0xff, 0x00, 0x00, 0x00});
+	return palette;
+}();
+
+static uint8_t expand_dac_color(uint8_t value) {
+	return static_cast<uint8_t>((value << 2) | (value >> 4));
+}
+
+static bool render_svga8_frame(Pixel* pixels, int& width, int& height) {
+	const uint8_t flags = tb.fb_flags;
+	if (tb.fb_off || (flags & 0x04) || (flags & 0x03) != 0x01) return false;
+
+	const size_t base = static_cast<size_t>(tb.fb_start_addr) << 2;
+	const size_t stride = static_cast<size_t>(tb.fb_stride) << 3;
+	const int fb_width = std::min<int>(static_cast<int>(tb.fb_width) << 3, H_RES);
+	const int fb_height = std::min<int>(
+		(flags & 0x08) ? static_cast<int>(tb.fb_height) / 2
+		               : static_cast<int>(tb.fb_height),
+		V_RES);
+	if (fb_width <= 0 || fb_height <= 0 || stride == 0 || base >= fb_mem.size())
+		return false;
+	const size_t last_row = base + static_cast<size_t>(fb_height - 1) * stride;
+	if (last_row >= fb_mem.size() || static_cast<size_t>(fb_width) > fb_mem.size() - last_row)
+		return false;
+
+	for (int y = 0; y < fb_height; ++y) {
+		const size_t row = base + static_cast<size_t>(y) * stride;
+		for (int x = 0; x < fb_width; ++x)
+			pixels[y * H_RES + x] = fb_palette[fb_mem[row + x]];
+	}
+	width = fb_width;
+	height = fb_height;
+	return true;
+}
 
 struct ScheduledPs2Bytes {
 	uint64_t cycle;
@@ -115,8 +157,10 @@ static Pixel presentbuffer[H_RES * V_RES]{};
 
 static WAVWriter* wav_writer = nullptr;
 static uint32_t audio_sample_accum = 0;
+static uint32_t audio_clock_accum = 0;
 static constexpr uint32_t AUDIO_SAMPLE_RATE = 48000;
-static constexpr uint32_t AUDIO_CLOCK_HZ = 50000000;
+static constexpr uint32_t SIM_SYS_CLOCK_HZ = 20000000;
+static constexpr uint32_t AUDIO_CLOCK_HZ = 24576000;
 
 template <typename T>
 static void write_pod(std::ostream& out, const T& value) {
@@ -447,6 +491,36 @@ static void queue_mouse_packet(int dx, int dy, uint8_t buttons) {
 	mouse_byte_queue.insert(mouse_byte_queue.end(), bytes.begin(), bytes.end());
 }
 
+static bool parse_named_key(string name, SDL_Keycode& key) {
+	std::transform(name.begin(), name.end(), name.begin(),
+		[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+	static const std::map<string, SDL_Keycode> keys = {
+		{"up", SDLK_UP}, {"down", SDLK_DOWN}, {"left", SDLK_LEFT}, {"right", SDLK_RIGHT},
+		{"enter", SDLK_RETURN}, {"return", SDLK_RETURN}, {"escape", SDLK_ESCAPE},
+		{"esc", SDLK_ESCAPE}, {"space", SDLK_SPACE}, {"tab", SDLK_TAB},
+		{"backspace", SDLK_BACKSPACE}, {"delete", SDLK_DELETE}, {"insert", SDLK_INSERT},
+		{"home", SDLK_HOME}, {"end", SDLK_END}, {"pageup", SDLK_PAGEUP},
+		{"pagedown", SDLK_PAGEDOWN}, {"ctrl", SDLK_LCTRL}, {"shift", SDLK_LSHIFT},
+		{"alt", SDLK_LALT}, {"f1", SDLK_F1}, {"f2", SDLK_F2}, {"f3", SDLK_F3},
+		{"f4", SDLK_F4}, {"f5", SDLK_F5}, {"f6", SDLK_F6}, {"f7", SDLK_F7},
+		{"f8", SDLK_F8}, {"f9", SDLK_F9}, {"f10", SDLK_F10}, {"f11", SDLK_F11},
+		{"f12", SDLK_F12},
+	};
+	auto it = keys.find(name);
+	if (it != keys.end()) {
+		key = it->second;
+		return true;
+	}
+	if (name.size() == 1) {
+		unsigned char ch = static_cast<unsigned char>(name[0]);
+		if (std::isalnum(ch)) {
+			key = static_cast<SDL_Keycode>(ch);
+			return true;
+		}
+	}
+	return false;
+}
+
 static void handle_kbd_host_cmd(uint8_t cmd) {
 	auto reply = [](uint8_t code) {
 		kbd_scancode_queue.push_back(code);
@@ -576,15 +650,24 @@ static void step() {
 	tb.ddram_dout = ddram_resp_data;
 
 	tb.clk_sys = !tb.clk_sys;
-	tb.clk_audio = tb.clk_sys;
 	posedge = tb.clk_sys;
 	tb.eval();
-	if (posedge && wav_writer) {
-		audio_sample_accum += AUDIO_SAMPLE_RATE;
-		if (audio_sample_accum >= AUDIO_CLOCK_HZ) {
-			audio_sample_accum -= AUDIO_CLOCK_HZ;
-			wav_writer->write_sample(static_cast<int16_t>(tb.sample_sb_l),
-			                         static_cast<int16_t>(tb.sample_sb_r));
+
+	// clk_audio is an independent 24.576 MHz board clock. Each step is one
+	// half-period of the 20 MHz simulated system clock, so advance a fractional
+	// clock scheduler and evaluate every resulting audio edge.
+	audio_clock_accum += 2 * AUDIO_CLOCK_HZ;
+	while (audio_clock_accum >= 2 * SIM_SYS_CLOCK_HZ) {
+		audio_clock_accum -= 2 * SIM_SYS_CLOCK_HZ;
+		tb.clk_audio = !tb.clk_audio;
+		tb.eval();
+		if (tb.clk_audio && wav_writer) {
+			audio_sample_accum += AUDIO_SAMPLE_RATE;
+			if (audio_sample_accum >= AUDIO_CLOCK_HZ) {
+				audio_sample_accum -= AUDIO_CLOCK_HZ;
+				wav_writer->write_sample(static_cast<int16_t>(tb.audio_l),
+				                         static_cast<int16_t>(tb.audio_r));
+			}
 		}
 	}
 	if (posedge) {
@@ -615,12 +698,24 @@ static void step() {
 		bool read_accepted = tb.ddram_rd && !tb.ddram_busy;
 		if (read_accepted) {
 			uint64_t byte_addr = static_cast<uint64_t>(tb.ddram_addr) << 3;
-			uint64_t offset = (byte_addr >= DDR_SHMEM_BASE) ? byte_addr - DDR_SHMEM_BASE : UINT64_MAX;
 			uint64_t data = 0;
-			if (offset != UINT64_MAX) {
+			const uint8_t* memory = nullptr;
+			size_t memory_size = 0;
+			uint64_t offset = 0;
+			if (byte_addr >= FB_BASE_BYTE && byte_addr < FB_BASE_BYTE + FB_MEM_SIZE) {
+				memory = fb_mem.data();
+				memory_size = fb_mem.size();
+				offset = byte_addr - FB_BASE_BYTE;
+			} else if (byte_addr >= DDR_SHMEM_BASE &&
+			           byte_addr < DDR_SHMEM_BASE + ddram_mem.size()) {
+				memory = ddram_mem.data();
+				memory_size = ddram_mem.size();
+				offset = byte_addr - DDR_SHMEM_BASE;
+			}
+			if (memory) {
 				for (int i = 0; i < 8; i++) {
-					if (offset + static_cast<uint64_t>(i) < ddram_mem.size())
-						data |= static_cast<uint64_t>(ddram_mem[offset + i]) << (8 * i);
+					if (offset + static_cast<uint64_t>(i) < memory_size)
+						data |= static_cast<uint64_t>(memory[offset + i]) << (8 * i);
 				}
 			}
 			ddram_resp_data = data;
@@ -637,11 +732,18 @@ static void step() {
 				uint64_t a = byte_addr + static_cast<uint64_t>(i);
 				if (a >= FB_BASE_BYTE && a < FB_BASE_BYTE + FB_MEM_SIZE) {
 					fb_mem[a - FB_BASE_BYTE] = b;
-					fb_writes++;
 				} else if (a >= DDR_SHMEM_BASE && (a - DDR_SHMEM_BASE) < ddram_mem.size()) {
 					ddram_mem[a - DDR_SHMEM_BASE] = b;
 				}
 			}
+		}
+		if (tb.fb_pal_wr) {
+			const uint32_t data = tb.fb_pal_data;
+			Pixel& pixel = fb_palette[tb.fb_pal_addr];
+			pixel.a = 0xff;
+			pixel.r = expand_dac_color((data >> 12) & 0x3f);
+			pixel.g = expand_dac_color((data >> 6) & 0x3f);
+			pixel.b = expand_dac_color(data & 0x3f);
 		}
 	}
 	if (trace && trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle) trace->dump(sim_time);
@@ -759,26 +861,6 @@ static void configure_x86_management(bool hdd0_present, const HpsFloppy& floppy0
 	configure_cmos(hdd0_present, floppy0.present(), floppy0.geometry(), boot_from_floppy);
 }
 
-// Dump the captured SVGA framebuffer (8bpp indices) as a grayscale PPM so we can
-// inspect the layout (e.g. mode-101 grid) the HPS scaler would display from DDR3.
-static void dump_fb(const char* path) {
-	FILE* f = fopen(path, "wb");
-	if (!f) return;
-	const int W = 640, H = 480;             // mode 101; FB_STRIDE = vga_stride*8 = 640
-	fprintf(f, "P6\n%d %d\n255\n", W, H);
-	for (int y = 0; y < H; y++)
-		for (int x = 0; x < W; x++) {
-			uint8_t idx = fb_mem[(size_t)y * W + x];
-			fputc(idx, f); fputc(idx, f); fputc(idx, f);   // grayscale = palette index
-		}
-	fclose(f);
-	// diagnostic: where in fb_mem did the writes actually land?
-	size_t lo = FB_MEM_SIZE, hi = 0; long nz = 0;
-	for (size_t k = 0; k < FB_MEM_SIZE; k++)
-		if (fb_mem[k]) { nz++; if (k < lo) lo = k; if (k > hi) hi = k; }
-	printf("   FB extent: nonzero=%ld range=[0x%zx..0x%zx]\n", nz, (size_t)(nz?lo:0), hi);
-}
-
 static bool dump_screen_png(const fs::path& path, int width, int height) {
 	FILE* file = fopen(path.c_str(), "wb");
 	if (!file) return false;
@@ -811,7 +893,7 @@ static bool dump_screen_png(const fs::path& path, int width, int height) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--enter-at sim_time] [--key-at sim_time:key] [--mouse-at sim_time:dx:dy[:buttons]] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle; keys: up, down, left, right, enter, escape; mouse buttons are bits L/R/M)\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--opl2|--opl3] [--enter-at sim_time] [--key-at sim_time:key] [--key-down-at sim_time:key] [--key-up-at sim_time:key] [--key-on-text substring:key] [--mouse-at sim_time:dx:dy[:buttons]] [--control-port N] [--control-bind IPv4] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle; mouse buttons are bits L/R/M)\n";
 }
 
 int main(int argc, char** argv) {
@@ -827,6 +909,8 @@ int main(int argc, char** argv) {
 	string restore_path;
 	vector<uint64_t> enter_cycles;
 	vector<std::pair<uint64_t, SDL_Keycode>> key_events;
+	vector<std::tuple<uint64_t, SDL_Keycode, bool>> key_edge_events;
+	vector<std::pair<string, SDL_Keycode>> text_key_events;
 	vector<std::tuple<uint64_t, int, int, uint8_t>> mouse_packet_events;
 	vector<uint64_t> ctrl_alt_del_cycles;
 	bool log_eip_enabled = false;
@@ -837,6 +921,11 @@ int main(int argc, char** argv) {
 	uint64_t next_screenshot_cycle = 0;
 	string stop_on_text;
 	unsigned ram_mb = 16;
+	bool ram_mb_explicit = false;
+	bool opl3_mode = true;
+	bool opl_mode_explicit = false;
+	unsigned control_port = 0;
+	string control_bind = "127.0.0.1";
 
 	for (int i = 1; i < argc; ++i) {
 		string arg = argv[i];
@@ -863,10 +952,17 @@ int main(int argc, char** argv) {
 			boot1_path = argv[++i];
 		} else if (arg == "--ram-mb" && i + 1 < argc) {
 			ram_mb = static_cast<unsigned>(std::stoul(argv[++i]));
+			ram_mb_explicit = true;
 			if (ram_mb != 16 && ram_mb != 32 && ram_mb != 64 && ram_mb != 128) {
 				cerr << "--ram-mb must be 16, 32, 64, or 128\n";
 				return 1;
 			}
+		} else if (arg == "--opl2") {
+			opl3_mode = false;
+			opl_mode_explicit = true;
+		} else if (arg == "--opl3") {
+			opl3_mode = true;
+			opl_mode_explicit = true;
 		} else if (arg == "--enter-at" && i + 1 < argc) {
 			enter_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--key-at" && i + 1 < argc) {
@@ -880,6 +976,9 @@ int main(int argc, char** argv) {
 				{"up", SDLK_UP}, {"down", SDLK_DOWN},
 				{"left", SDLK_LEFT}, {"right", SDLK_RIGHT},
 				{"enter", SDLK_RETURN}, {"escape", SDLK_ESCAPE},
+				{"space", SDLK_SPACE}, {"tab", SDLK_TAB},
+				{"alt", SDLK_LALT}, {"f4", SDLK_F4},
+				{"i", SDLK_i}, {"n", SDLK_n}, {"o", SDLK_o}, {"w", SDLK_w},
 			};
 			auto key = keys.find(event.substr(separator + 1));
 			if (key == keys.end()) {
@@ -887,6 +986,49 @@ int main(int argc, char** argv) {
 				return 1;
 			}
 			key_events.push_back({std::stoull(event.substr(0, separator)) / 2, key->second});
+		} else if ((arg == "--key-down-at" || arg == "--key-up-at") && i + 1 < argc) {
+			string event = argv[++i];
+			size_t separator = event.find(':');
+			if (separator == string::npos) {
+				cerr << arg << " requires sim_time:key\n";
+				return 1;
+			}
+			static const std::map<string, SDL_Keycode> keys = {
+				{"up", SDLK_UP}, {"down", SDLK_DOWN},
+				{"left", SDLK_LEFT}, {"right", SDLK_RIGHT},
+				{"enter", SDLK_RETURN}, {"escape", SDLK_ESCAPE},
+				{"space", SDLK_SPACE}, {"tab", SDLK_TAB},
+				{"alt", SDLK_LALT}, {"f4", SDLK_F4},
+				{"i", SDLK_i}, {"n", SDLK_n}, {"o", SDLK_o}, {"w", SDLK_w},
+			};
+			auto key = keys.find(event.substr(separator + 1));
+			if (key == keys.end()) {
+				cerr << "unsupported " << arg << " key: " << event.substr(separator + 1) << "\n";
+				return 1;
+			}
+			key_edge_events.push_back({std::stoull(event.substr(0, separator)) / 2,
+			                           key->second, arg == "--key-down-at"});
+		} else if (arg == "--key-on-text" && i + 1 < argc) {
+			string event = argv[++i];
+			size_t separator = event.rfind(':');
+			if (separator == string::npos || separator == 0) {
+				cerr << "--key-on-text requires substring:key\n";
+				return 1;
+			}
+			static const std::map<string, SDL_Keycode> keys = {
+				{"up", SDLK_UP}, {"down", SDLK_DOWN},
+				{"left", SDLK_LEFT}, {"right", SDLK_RIGHT},
+				{"enter", SDLK_RETURN}, {"escape", SDLK_ESCAPE},
+				{"space", SDLK_SPACE}, {"tab", SDLK_TAB},
+				{"alt", SDLK_LALT}, {"f4", SDLK_F4},
+				{"i", SDLK_i}, {"n", SDLK_n}, {"o", SDLK_o}, {"w", SDLK_w},
+			};
+			auto key = keys.find(event.substr(separator + 1));
+			if (key == keys.end()) {
+				cerr << "unsupported --key-on-text key: " << event.substr(separator + 1) << "\n";
+				return 1;
+			}
+			text_key_events.push_back({event.substr(0, separator), key->second});
 		} else if (arg == "--mouse-at" && i + 1 < argc) {
 			string event = argv[++i];
 			vector<string> fields;
@@ -910,6 +1052,14 @@ int main(int argc, char** argv) {
 			}
 			mouse_packet_events.push_back({std::stoull(fields[0]) / 2, dx, dy,
 			                               static_cast<uint8_t>(buttons)});
+		} else if (arg == "--control-port" && i + 1 < argc) {
+			control_port = std::stoul(argv[++i]);
+			if (control_port == 0 || control_port > 65535) {
+				cerr << "--control-port must be between 1 and 65535\n";
+				return 1;
+			}
+		} else if (arg == "--control-bind" && i + 1 < argc) {
+			control_bind = argv[++i];
 		} else if (arg == "--ctrl-alt-del-at" && i + 1 < argc) {
 			ctrl_alt_del_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--screen-at" && i + 1 < argc) {
@@ -967,6 +1117,15 @@ int main(int argc, char** argv) {
 		fs::create_directories(screenshot_dir);
 		next_screenshot_cycle = screenshot_interval_cycles;
 	}
+	ControlServer control_server;
+	if (control_port != 0) {
+		string error;
+		if (!control_server.start(control_bind, static_cast<uint16_t>(control_port), error)) {
+			cerr << "control server failed: " << error << "\n";
+			return 1;
+		}
+		cout << "Control socket listening on " << control_bind << ":" << control_port << "\n";
+	}
 
 	for (uint64_t cycle : enter_cycles) {
 		auto it = ps2scancodes.find(SDLK_RETURN);
@@ -984,6 +1143,13 @@ int main(int argc, char** argv) {
 			bytes.insert(bytes.end(), it->second.first.begin(), it->second.first.end());
 			bytes.insert(bytes.end(), it->second.second.begin(), it->second.second.end());
 			ps2_events.push_back({cycle, bytes});
+		}
+	}
+	for (const auto& [cycle, key, pressed] : key_edge_events) {
+		auto it = ps2scancodes.find(key);
+		if (it != ps2scancodes.end()) {
+			const auto& bytes = pressed ? it->second.first : it->second.second;
+			ps2_events.push_back({cycle, {bytes.begin(), bytes.end()}});
 		}
 	}
 	for (uint64_t cycle : ctrl_alt_del_cycles) {
@@ -1047,6 +1213,7 @@ int main(int argc, char** argv) {
 	uint32_t last_render_ms = 0;
 	uint32_t last_title_ms = 0;
 	vluint64_t last_title_sim_time = 0;
+	bool present_dirty = true;
 	int resolution_x = 720;
 	int resolution_y = 400;
 	int scan_x = 0;
@@ -1056,6 +1223,8 @@ int main(int argc, char** argv) {
 	int frame_line_max = 0;
 	uint64_t next_console_text_check = 0;
 	std::string last_console_text;
+	size_t next_text_key_event = 0;
+	deque<fs::path> control_screenshot_requests;
 
 	if (!g_headless) {
 		if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -1063,7 +1232,8 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		sdl_window = SDL_CreateWindow("z386 MiSTer sim", SDL_WINDOWPOS_CENTERED,
-			SDL_WINDOWPOS_CENTERED, resolution_x * 2, resolution_y * 2,
+			SDL_WINDOWPOS_CENTERED, resolution_x * INITIAL_WINDOW_SCALE,
+			resolution_y * INITIAL_WINDOW_SCALE,
 			SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 		if (!sdl_window) {
 			cerr << "SDL window creation failed: " << SDL_GetError() << "\n";
@@ -1098,7 +1268,7 @@ int main(int argc, char** argv) {
 	unsigned ram_size_code = (ram_mb == 16) ? 0 :
 	                         (ram_mb == 32) ? 1 :
 	                         (ram_mb == 64) ? 2 : 3;
-	tb.status = uint64_t{ram_size_code} << 29;
+	tb.status = (uint64_t{ram_size_code} << 29) | (uint64_t{!opl3_mode} << 57);
 	tb.ioctl_download = 0;
 	tb.ioctl_index = 0;
 	tb.ioctl_wr = 0;
@@ -1114,7 +1284,7 @@ int main(int argc, char** argv) {
 
 	if (record_audio) {
 		wav_writer = new WAVWriter("dsp.wav", AUDIO_SAMPLE_RATE, 2, 16);
-		cout << "Recording DSP output to dsp.wav at " << AUDIO_SAMPLE_RATE << " Hz\n";
+		cout << "Recording mixed audio to dsp.wav at " << AUDIO_SAMPLE_RATE << " Hz\n";
 	}
 
 	if (enable_trace) set_trace(true);
@@ -1271,15 +1441,24 @@ int main(int argc, char** argv) {
 
 		if (tb.video_vs && !prev_vs) {
 			saw_video_sync = true;
-			if (frame_x_max >= 640) resolution_x = std::min(frame_x_max, H_RES);
-			if (frame_line_max >= 300) resolution_y = std::min(frame_line_max, V_RES);
+			const bool svga_frame = render_svga8_frame(
+				presentbuffer, resolution_x, resolution_y);
+			if (!svga_frame) {
+				if (frame_x_max >= 640) resolution_x = std::min(frame_x_max, H_RES);
+				if (frame_line_max >= 300) resolution_y = std::min(frame_line_max, V_RES);
+				std::copy(std::begin(screenbuffer), std::end(screenbuffer),
+				          std::begin(presentbuffer));
+			}
+			present_dirty = true;
 			cout << sim_time << ": FRAME: PE=" << static_cast<int>(tb.dbg_pe)
 			     << " VM=" << static_cast<int>(tb.dbg_vm)
 			     << " CS:EIP=" << std::hex << tb.dbg_cs << ":" << tb.dbg_eip
 			     << std::dec << " pix=" << frame_pix_cnt
 			     << " lines=" << frame_line_max
-			     << " xmax=" << frame_x_max << "\n";
-			std::copy(std::begin(screenbuffer), std::end(screenbuffer), std::begin(presentbuffer));
+			     << " xmax=" << frame_x_max;
+			if (svga_frame)
+				cout << " fb=" << resolution_x << "x" << resolution_y;
+			cout << "\n";
 			if (!screenshot_dir.empty() && cycle >= next_screenshot_cycle) {
 				fs::path path = fs::path(screenshot_dir) /
 				                ("screen_" + std::to_string(sim_time) + ".png");
@@ -1287,6 +1466,14 @@ int main(int argc, char** argv) {
 					cout << sim_time << ": screenshot " << path.string() << "\n";
 				while (next_screenshot_cycle <= cycle)
 					next_screenshot_cycle += screenshot_interval_cycles;
+			}
+			while (!control_screenshot_requests.empty()) {
+				const fs::path path = control_screenshot_requests.front();
+				control_screenshot_requests.pop_front();
+				if (dump_screen_png(path, resolution_x, resolution_y))
+					cout << sim_time << ": control screenshot " << path << "\n";
+				else
+					cerr << "control screenshot failed: " << path << "\n";
 			}
 			std::fill(std::begin(screenbuffer), std::end(screenbuffer), Pixel{0xff, 0x00, 0x00, 0x00});
 			frame_pix_cnt = 0;
@@ -1302,6 +1489,15 @@ int main(int argc, char** argv) {
 				if (!stop_on_text.empty() && screen.find(stop_on_text) != std::string::npos) {
 					cout << sim_time << ": stop-on-text matched [" << stop_on_text << "]\n";
 					running = false;
+				}
+				if (next_text_key_event < text_key_events.size()) {
+					const auto& [needle, key] = text_key_events[next_text_key_event];
+					if (screen.find(needle) != std::string::npos) {
+						cout << sim_time << ": key-on-text matched [" << needle << "]\n";
+						queue_sdl_key(key, true);
+						queue_sdl_key(key, false);
+						next_text_key_event++;
+					}
 				}
 				next_console_text_check = cycle + 1000000ull;
 			}
@@ -1378,15 +1574,19 @@ int main(int argc, char** argv) {
 		{
 			std::ofstream out(tmp_dir / "harness.bin", ios::binary);
 			const uint32_t magic = 0x5A434B50; // ZCKP
-			const uint32_t version = 3;
+			const uint32_t version = 5;
 			write_pod(out, magic);
 			write_pod(out, version);
 			write_pod(out, sim_time);
 			write_pod(out, current_cycle);
 			write_pod(out, posedge);
+			write_pod(out, audio_clock_accum);
+			write_pod(out, audio_sample_accum);
 			write_vector_u8(out, ddram_mem);
 			write_pod(out, ddram_resp_valid);
 			write_pod(out, ddram_resp_data);
+			write_vector_u8(out, fb_mem);
+			write_pod(out, fb_palette);
 			write_scheduled_events(out, ps2_events);
 			write_pod(out, next_ps2_event);
 			write_scheduled_events(out, mouse_events);
@@ -1467,15 +1667,26 @@ int main(int argc, char** argv) {
 			uint32_t version = 0;
 			read_pod(in, magic);
 			read_pod(in, version);
-			if (magic != 0x5A434B50 || (version < 1 || version > 3)) {
+			if (magic != 0x5A434B50 || (version < 1 || version > 5)) {
 				throw std::runtime_error("bad simulator checkpoint");
 			}
 			read_pod(in, sim_time);
 			read_pod(in, current_cycle);
 			read_pod(in, posedge);
+			if (version >= 4) {
+				read_pod(in, audio_clock_accum);
+				read_pod(in, audio_sample_accum);
+			} else {
+				audio_clock_accum = 0;
+				audio_sample_accum = 0;
+			}
 			read_vector_u8(in, ddram_mem);
 			read_pod(in, ddram_resp_valid);
 			read_pod(in, ddram_resp_data);
+			if (version >= 5) {
+				read_vector_u8(in, fb_mem);
+				read_pod(in, fb_palette);
+			}
 			read_scheduled_events(in, ps2_events);
 			read_pod(in, next_ps2_event);
 			if (version >= 3) {
@@ -1567,14 +1778,108 @@ int main(int argc, char** argv) {
 		cerr << e.what() << "\n";
 		return 1;
 	}
+	// Checkpoints preserve MiSTer status. Override only hardware selections that
+	// were explicitly supplied for this replay.
+	if (ram_mb_explicit)
+		tb.status = (tb.status & ~(uint64_t{3} << 29)) |
+		            (uint64_t{ram_size_code} << 29);
+	if (opl_mode_explicit)
+		tb.status = (tb.status & ~(uint64_t{1} << 57)) |
+		            (uint64_t{!opl3_mode} << 57);
+	tb.eval();
+
+	auto process_control_commands = [&]() {
+		control_server.update_status(sim_time, resolution_x, resolution_y, ps2_mouse_buttons);
+		for (const string& line : control_server.drain_commands()) {
+			std::istringstream command(line);
+			string operation;
+			command >> operation;
+			if (operation == "mouse") {
+				int dx = 0;
+				int dy = 0;
+				unsigned buttons = ps2_mouse_buttons;
+				if (!(command >> dx >> dy)) {
+					cerr << "control: mouse requires <dx> <dy> [buttons]\n";
+					continue;
+				}
+				if (command >> buttons) {
+					if (buttons > 7) {
+						cerr << "control: mouse buttons must be a 3-bit L/R/M mask\n";
+						continue;
+					}
+				}
+				ps2_mouse_buttons = static_cast<uint8_t>(buttons);
+				queue_mouse_packet(dx, dy, ps2_mouse_buttons);
+				cout << sim_time << ": control mouse dx=" << dx << " dy=" << dy
+				     << " buttons=" << buttons << "\n";
+			} else if (operation == "key") {
+				string name;
+				string action = "press";
+				command >> name;
+				if (name.empty()) {
+					cerr << "control: key requires <name> [press|down|up]\n";
+					continue;
+				}
+				command >> action;
+				SDL_Keycode key = SDLK_UNKNOWN;
+				if (!parse_named_key(name, key) || ps2scancodes.find(key) == ps2scancodes.end()) {
+					cerr << "control: unsupported key: " << name << "\n";
+					continue;
+				}
+				if (action == "press") {
+					queue_sdl_key(key, true);
+					queue_sdl_key(key, false);
+				} else if (action == "down") {
+					queue_sdl_key(key, true);
+				} else if (action == "up") {
+					queue_sdl_key(key, false);
+				} else {
+					cerr << "control: key action must be press, down, or up\n";
+					continue;
+				}
+				cout << sim_time << ": control key " << name << " " << action << "\n";
+			} else if (operation == "checkpoint") {
+				if (checkpoint_dir.empty()) checkpoint_dir = "checkpoints";
+				try {
+					save_checkpoint(current_cycle);
+				} catch (const std::exception& e) {
+					cerr << "control checkpoint failed: " << e.what() << "\n";
+				}
+			} else if (operation == "screenshot") {
+				string requested_path;
+				command >> requested_path;
+				fs::path path;
+				if (!requested_path.empty()) {
+					path = requested_path;
+				} else if (!screenshot_dir.empty()) {
+					path = fs::path(screenshot_dir) /
+					       ("control_" + std::to_string(sim_time) + ".png");
+				} else {
+					path = "control_" + std::to_string(sim_time) + ".png";
+				}
+				if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
+				control_screenshot_requests.push_back(path);
+				cout << sim_time << ": control screenshot queued for next frame " << path << "\n";
+			} else if (operation == "quit") {
+				cout << sim_time << ": control quit\n";
+				running = false;
+			} else {
+				cerr << "control: unsupported command: " << line << "\n";
+			}
+		}
+	};
+
+	static constexpr uint64_t GUI_POLL_CYCLES = 2048;
+	static constexpr uint64_t CONTROL_POLL_CYCLES = 2048;
+	uint64_t next_gui_poll_cycle = loop_start_cycle;
+	uint64_t next_control_poll_cycle = loop_start_cycle;
 
 	for (uint64_t cycle = loop_start_cycle; cycle < max_cycles && running && (force_stop_cycle == 0 || cycle < force_stop_cycle); ++cycle) {
 		current_cycle = cycle;
-		// Periodically dump the captured SVGA framebuffer (DDR3 path verification)
-		if ((cycle % 2000000) == 0 && fb_writes > 0) {
-			dump_fb("/tmp/z386_fb.ppm");
-			printf("%llu: SVGA FB dump -> /tmp/z386_fb.ppm (fb_writes=%llu)\n",
-			       (unsigned long long)sim_time, (unsigned long long)fb_writes);
+		if (control_port != 0 && cycle >= next_control_poll_cycle) {
+			next_control_poll_cycle = cycle + CONTROL_POLL_CYCLES;
+			process_control_commands();
+			if (!running) break;
 		}
 		tb.sim_soft_reset = (sim_soft_reset_cycles > 0) ? 1 : 0;
 		if (sim_soft_reset_cycles > 0) sim_soft_reset_cycles--;
@@ -1644,7 +1949,8 @@ int main(int argc, char** argv) {
 				std::chrono::seconds(checkpoint_interval_sec);
 		}
 
-		if (!g_headless) {
+		if (!g_headless && cycle >= next_gui_poll_cycle) {
+			next_gui_poll_cycle = cycle + GUI_POLL_CYCLES;
 			uint32_t now = get_ticks_ms();
 			SDL_Event e;
 			while (SDL_PollEvent(&e)) {
@@ -1655,6 +1961,10 @@ int main(int argc, char** argv) {
 						running = false;
 					} else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST && mouse_captured) {
 						set_mouse_capture(false);
+					} else if (e.window.event == SDL_WINDOWEVENT_EXPOSED ||
+					           e.window.event == SDL_WINDOWEVENT_RESIZED ||
+					           e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+						present_dirty = true;
 					}
 				}
 				else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
@@ -1723,30 +2033,35 @@ int main(int argc, char** argv) {
 				}
 			}
 
-			if (now - last_render_ms >= 33) {
-				SDL_UpdateTexture(sdl_texture, nullptr, presentbuffer, H_RES * sizeof(Pixel));
+			if (present_dirty && now - last_render_ms >= 33) {
+				static int logical_width = 0;
+				static int logical_height = 0;
+				if (resolution_x != logical_width || resolution_y != logical_height) {
+					SDL_RenderSetLogicalSize(sdl_renderer, resolution_x, resolution_y);
+					logical_width = resolution_x;
+					logical_height = resolution_y;
+				}
 				const SDL_Rect src_rect = {0, 0, resolution_x, resolution_y};
+				SDL_UpdateTexture(sdl_texture, &src_rect, presentbuffer, H_RES * sizeof(Pixel));
 				SDL_RenderClear(sdl_renderer);
 				SDL_RenderCopy(sdl_renderer, sdl_texture, &src_rect, nullptr);
 				SDL_RenderPresent(sdl_renderer);
 				last_render_ms = now;
+				present_dirty = false;
+			}
 
-				if (now - last_title_ms >= 1000) {
-					// sim_time advances 2 units per clk_sys cycle (one per edge).
-					// Use the measured wall interval: the title refresh is gated
-					// by the 33ms render tick, so it is not exactly 1000ms.
-					uint64_t delta_cycles = (sim_time - last_title_sim_time) / 2;
-					double elapsed_ms = (double)(now - last_title_ms);
-					bool trace_active = trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle;
-					char title[192];
-					snprintf(title, sizeof(title), "z386 MiSTer - %.2f MHz%s%s",
-						delta_cycles / (elapsed_ms * 1000.0),
-						trace_active ? " [TRACE]" : "",
-						mouse_captured ? " [MOUSE CAPTURED - ESC/GUI-ESC to release]" : "");
-					SDL_SetWindowTitle(sdl_window, title);
-					last_title_ms = now;
-					last_title_sim_time = sim_time;
-				}
+			if (now - last_title_ms >= 1000) {
+				uint64_t delta_cycles = (sim_time - last_title_sim_time) / 2;
+				double elapsed_ms = (double)(now - last_title_ms);
+				bool trace_active = trace_toggle && trace_loop_started && current_cycle >= trace_start_cycle;
+				char title[192];
+				snprintf(title, sizeof(title), "z386 MiSTer - %.2f MHz%s%s",
+					delta_cycles / (elapsed_ms * 1000.0),
+					trace_active ? " [TRACE]" : "",
+					mouse_captured ? " [MOUSE CAPTURED - ESC/GUI-ESC to release]" : "");
+				SDL_SetWindowTitle(sdl_window, title);
+				last_title_ms = now;
+				last_title_sim_time = sim_time;
 			}
 		}
 
@@ -1803,6 +2118,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	control_server.stop();
 	if (trace) {
 		trace->close();
 		delete trace;

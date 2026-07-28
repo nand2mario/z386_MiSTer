@@ -1,10 +1,16 @@
 VERILATOR = verilator
 VERILATOR_BUILD_JOBS ?= 8
+SIM_OPT_LEVEL ?= -O2
+ifeq ($(shell uname -s),Darwin)
+SIM_ARCH_FLAGS ?= -mcpu=native
+else
+SIM_ARCH_FLAGS ?= -march=native
+endif
 SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
 PNG_CFLAGS=$(shell pkg-config --cflags libpng)
 PNG_LIBS=$(shell pkg-config --libs libpng)
-VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) $(PNG_CFLAGS) -O2 -std=c++17" -LDFLAGS "$(SDL_LIBS) $(PNG_LIBS)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
+VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) $(PNG_CFLAGS) $(SIM_OPT_LEVEL) $(SIM_ARCH_FLAGS) -std=c++17 -pthread" -LDFLAGS "$(SDL_LIBS) $(PNG_LIBS) -pthread" -MAKEFLAGS "OPT_FAST=$(SIM_OPT_LEVEL) OPT_GLOBAL=$(SIM_OPT_LEVEL)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
 VERILATOR_INCLUDE = -I../src -I../src/z386
 
 D=../src
@@ -36,7 +42,7 @@ SOURCES = ../z386_mister_sim.sv \
 		  $(D)/soc/sound/opl3/timers.sv $(D)/soc/sound/opl3/tremolo.sv $(D)/soc/sound/opl3/trick_sw_detection.sv \
 		  $(D)/soc/sound/opl3/vibrato.sv $(D)/soc/sound/opl3/opl3.sv
 
-CPP_SOURCES = main.cpp ide_hps.cpp
+CPP_SOURCES = main.cpp ide_hps.cpp control_server.cpp
 
 all: obj_dir/Vz386_mister_sim
 
@@ -51,7 +57,7 @@ trace: obj_dir/Vz386_mister_sim
 	./obj_dir/Vz386_mister_sim --trace
 
 clean:
-	rm -rf obj_dir
+	rm -rf obj_dir obj_dir_trace
 	rm -f ucode.hex waveform.fst
 
 .PHONY: all run trace clean
