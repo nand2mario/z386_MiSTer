@@ -3,12 +3,17 @@ OBJ_DIR := obj_dir
 
 .PHONY: test clean
 
-test: $(OBJ_DIR)/Vtb_iobus_adapter $(OBJ_DIR)/Vtb_pit_io $(OBJ_DIR)/Vtb_rtc_ram_size $(OBJ_DIR)/Vtb_sdram_size $(OBJ_DIR)/Vtb_main_memory_svga
+test: $(OBJ_DIR)/Vtb_iobus_adapter $(OBJ_DIR)/Vtb_pit_io $(OBJ_DIR)/Vtb_rtc_ram_size $(OBJ_DIR)/Vtb_sdram_size $(OBJ_DIR)/Vtb_main_memory_svga $(OBJ_DIR)/Vtb_vga_fb_dimensions
 	./$(OBJ_DIR)/Vtb_iobus_adapter
 	./$(OBJ_DIR)/Vtb_pit_io
 	./$(OBJ_DIR)/Vtb_rtc_ram_size
 	./$(OBJ_DIR)/Vtb_sdram_size
 	./$(OBJ_DIR)/Vtb_main_memory_svga
+	./$(OBJ_DIR)/Vtb_vga_fb_dimensions
+
+$(OBJ_DIR)/Vtb_vga_fb_dimensions: tb_vga_fb_dimensions.sv ../src/soc/vga.v ../src/common/dpram.v | $(OBJ_DIR)
+	$(VERILATOR) --binary --timing -Wno-fatal --Mdir $(OBJ_DIR)/vga_fb_dimensions \
+		--top-module tb_vga_fb_dimensions $^ -o ../Vtb_vga_fb_dimensions
 
 $(OBJ_DIR):
 	mkdir -p $@

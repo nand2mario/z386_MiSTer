@@ -88,8 +88,8 @@ module z386_mister_sim (
 	output        soft_reset_req
 );
 
-parameter [27:0] CLOCK_RATE_HZ = 28'd20_000_000;		// slower virtual clock simulates faster
-// parameter [27:0] CLOCK_RATE_HZ = 28'd90_000_000;		// faster virtual clock required to sim SVGA
+// The simulation build overrides this parameter for speed-sensitive testing.
+parameter [27:0] CLOCK_RATE_HZ = 28'd20_000_000;
 
 wire        software_reset;
 reg  [7:0]  software_reset_count;
@@ -427,6 +427,7 @@ system #(
 	.video_r             (video_r_w),
 	.video_g             (video_g_w),
 	.video_b             (video_b_w),
+	.video_border        (~status[54]),
 	.video_start_addr    (fb_start_addr),
 	.video_width         (fb_width),
 	.video_height        (fb_height),

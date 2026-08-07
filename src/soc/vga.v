@@ -1731,11 +1731,11 @@ always @(posedge clk_sys) begin
 	vga_rd_seg     <= seg_rd;
 	vga_wr_seg     <= seg_wr;
 	vga_start_addr <= crtc_address_start;
-	vga_width      <= hide_overscan ? ((crtc_horizontal_display_size <= crtc_horizontal_blanking_start) ? crtc_horizontal_display_size + 1'd1 : crtc_horizontal_blanking_start + 1'd1)
-	                                : crtc_horizontal_blanking_start + 1'd1 + horiz_overscan_left;
+	// The HPS framebuffer contains active pixels only. Including overscan here
+	// makes its visible width exceed the scanline stride and wraps into the next row.
+	vga_width      <= (crtc_horizontal_display_size <= crtc_horizontal_blanking_start) ? crtc_horizontal_display_size + 1'd1 : crtc_horizontal_blanking_start + 1'd1;
 	vga_stride     <= crtc_address_offset;
-	vga_height     <= hide_overscan ? ((crtc_vertical_display_size <= crtc_vertical_blanking_start) ? crtc_vertical_display_size + 1'd1 : crtc_vertical_blanking_start + 1'd1)
-	                                : crtc_vertical_blanking_start + 1'd1 + vert_overscan_top;
+	vga_height     <= (crtc_vertical_display_size <= crtc_vertical_blanking_start) ? crtc_vertical_display_size + 1'd1 : crtc_vertical_blanking_start + 1'd1;
 	vga_flags      <= { vertical_doublescan,                        // vga_flags[3]   = vertical doublescan
 	                    attrib_pelclock_div2,                       // vga_flags[2]   = 256-color
 	                                                                // vga_flags[1:0] = color bit depth

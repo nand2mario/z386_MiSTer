@@ -159,7 +159,10 @@ static WAVWriter* wav_writer = nullptr;
 static uint32_t audio_sample_accum = 0;
 static uint32_t audio_clock_accum = 0;
 static constexpr uint32_t AUDIO_SAMPLE_RATE = 48000;
-static constexpr uint32_t SIM_SYS_CLOCK_HZ = 20000000;
+#ifndef SIM_SYSTEM_CLOCK_HZ
+#define SIM_SYSTEM_CLOCK_HZ 20000000
+#endif
+static constexpr uint32_t SIM_SYS_CLOCK_HZ = SIM_SYSTEM_CLOCK_HZ;
 static constexpr uint32_t AUDIO_CLOCK_HZ = 24576000;
 
 template <typename T>
@@ -893,7 +896,7 @@ static bool dump_screen_png(const fs::path& path, int width, int height) {
 }
 
 static void usage() {
-	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--opl2|--opl3] [--enter-at sim_time] [--key-at sim_time:key] [--key-down-at sim_time:key] [--key-up-at sim_time:key] [--key-on-text substring:key] [--mouse-at sim_time:dx:dy[:buttons]] [--control-port N] [--control-bind IPv4] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle; mouse buttons are bits L/R/M)\n";
+	cout << "Usage: Vz386_mister_sim [--trace] [--trace-start sim_time] [--headless] [--end sim_time] [--disk path] [--floppy path] [--boot0 path] [--boot1 path] [--ram-mb 16|32|64|128] [--opl2|--opl3] [--vga-border|--no-vga-border] [--enter-at sim_time] [--key-at sim_time:key] [--key-down-at sim_time:key] [--key-up-at sim_time:key] [--key-on-text substring:key] [--mouse-at sim_time:dx:dy[:buttons]] [--control-port N] [--control-bind IPv4] [--ctrl-alt-del-at sim_time] [--screen-at sim_time] [--log-eip CS:EIP] [--screenshot-dir path] [--screenshot-interval sim_time] [--stop-on-text substring] [--no-ide] [--record] [--checkpoint-dir path] [--checkpoint-interval-sec N] [--checkpoint-keep N] [--restore path]  (all times are sim_time = 2*cycle; mouse buttons are bits L/R/M)\n";
 }
 
 int main(int argc, char** argv) {
@@ -924,6 +927,8 @@ int main(int argc, char** argv) {
 	bool ram_mb_explicit = false;
 	bool opl3_mode = true;
 	bool opl_mode_explicit = false;
+	bool vga_border = true;
+	bool vga_border_explicit = false;
 	unsigned control_port = 0;
 	string control_bind = "127.0.0.1";
 
@@ -963,6 +968,12 @@ int main(int argc, char** argv) {
 		} else if (arg == "--opl3") {
 			opl3_mode = true;
 			opl_mode_explicit = true;
+		} else if (arg == "--vga-border") {
+			vga_border = true;
+			vga_border_explicit = true;
+		} else if (arg == "--no-vga-border") {
+			vga_border = false;
+			vga_border_explicit = true;
 		} else if (arg == "--enter-at" && i + 1 < argc) {
 			enter_cycles.push_back(std::stoull(argv[++i]) / 2);   // sim_time -> cycles
 		} else if (arg == "--key-at" && i + 1 < argc) {
@@ -1268,7 +1279,9 @@ int main(int argc, char** argv) {
 	unsigned ram_size_code = (ram_mb == 16) ? 0 :
 	                         (ram_mb == 32) ? 1 :
 	                         (ram_mb == 64) ? 2 : 3;
-	tb.status = (uint64_t{ram_size_code} << 29) | (uint64_t{!opl3_mode} << 57);
+	tb.status = (uint64_t{ram_size_code} << 29) |
+	            (uint64_t{!vga_border} << 54) |
+	            (uint64_t{!opl3_mode} << 57);
 	tb.ioctl_download = 0;
 	tb.ioctl_index = 0;
 	tb.ioctl_wr = 0;
@@ -1786,6 +1799,9 @@ int main(int argc, char** argv) {
 	if (opl_mode_explicit)
 		tb.status = (tb.status & ~(uint64_t{1} << 57)) |
 		            (uint64_t{!opl3_mode} << 57);
+	if (vga_border_explicit)
+		tb.status = (tb.status & ~(uint64_t{1} << 54)) |
+		            (uint64_t{!vga_border} << 54);
 	tb.eval();
 
 	auto process_control_commands = [&]() {

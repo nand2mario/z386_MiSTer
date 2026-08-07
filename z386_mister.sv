@@ -121,7 +121,7 @@ localparam CONF_STR = {
 	"P1,Audio & Video;",
 	"P1-;",
 	"P1OMN,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
-	"P1oN,Border,No,Yes;",
+	"P1oM,Border,Yes,No;",
 	"P1-;",
 	"P1oP,FM mode,OPL3,OPL2 compatibility;",
 	"P1OH,C/MS,Disable,Enable;",
@@ -670,7 +670,7 @@ system #(
 	.video_r             (core_r),
 	.video_g             (core_g),
 	.video_b             (core_b),
-	.video_border        (status[55]),   // OSD "Border" (oN)
+	.video_border        (~status[54]),  // OSD "Border" (oM), shown by default
 
 	// SVGA framebuffer descriptor (vga.v) -> MiSTer HPS framebuffer (below)
 	.video_start_addr    (vga_start_addr),

@@ -1,6 +1,8 @@
 VERILATOR = verilator
 VERILATOR_BUILD_JOBS ?= 8
 SIM_OPT_LEVEL ?= -O2
+SIM_CLOCK_HZ ?= 20000000
+OBJ_DIR ?= obj_dir
 ifeq ($(shell uname -s),Darwin)
 SIM_ARCH_FLAGS ?= -mcpu=native
 else
@@ -10,7 +12,7 @@ SDL_CFLAGS=$(shell sdl2-config --cflags)
 SDL_LIBS=$(shell sdl2-config --libs)
 PNG_CFLAGS=$(shell pkg-config --cflags libpng)
 PNG_LIBS=$(shell pkg-config --libs libpng)
-VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) $(PNG_CFLAGS) $(SIM_OPT_LEVEL) $(SIM_ARCH_FLAGS) -std=c++17 -pthread" -LDFLAGS "$(SDL_LIBS) $(PNG_LIBS) -pthread" -MAKEFLAGS "OPT_FAST=$(SIM_OPT_LEVEL) OPT_GLOBAL=$(SIM_OPT_LEVEL)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
+VERILATOR_FLAGS = +1800-2017ext+sv --trace-fst --trace-structs --savable --top-module z386_mister_sim --Mdir $(OBJ_DIR) -GCLOCK_RATE_HZ=$(SIM_CLOCK_HZ) --cc --exe --build -j $(VERILATOR_BUILD_JOBS) -CFLAGS "$(SDL_CFLAGS) $(PNG_CFLAGS) $(SIM_OPT_LEVEL) $(SIM_ARCH_FLAGS) -DSIM_SYSTEM_CLOCK_HZ=$(SIM_CLOCK_HZ) -std=c++17 -pthread" -LDFLAGS "$(SDL_LIBS) $(PNG_LIBS) -pthread" -MAKEFLAGS "OPT_FAST=$(SIM_OPT_LEVEL) OPT_GLOBAL=$(SIM_OPT_LEVEL)" -Wno-WIDTH -Wno-PINMISSING -Wno-COMBDLY -Wno-TIMESCALEMOD -Wno-IMPLICITSTATIC -Wno-CASEOVERLAP -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-REALCVT -Wno-ASCRANGE -Wno-MULTIDRIVEN -Wno-LATCH -DZ386_ALTERA_ALU=1
 VERILATOR_INCLUDE = -I../src -I../src/z386
 
 D=../src
@@ -44,20 +46,23 @@ SOURCES = ../z386_mister_sim.sv \
 
 CPP_SOURCES = main.cpp ide_hps.cpp control_server.cpp
 
-all: obj_dir/Vz386_mister_sim
+all: $(OBJ_DIR)/Vz386_mister_sim
 
-obj_dir/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../src/z386/ucode.hex
+$(OBJ_DIR)/Vz386_mister_sim: $(SOURCES) $(CPP_SOURCES) ../src/z386/ucode.hex
 	ln -sf ../src/z386/ucode.hex .
 	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILATOR_INCLUDE) $(SOURCES) $(CPP_SOURCES)
 
-run: obj_dir/Vz386_mister_sim
-	./obj_dir/Vz386_mister_sim --enter-at 10000000
+run: $(OBJ_DIR)/Vz386_mister_sim
+	./$(OBJ_DIR)/Vz386_mister_sim --enter-at 10000000
 
-trace: obj_dir/Vz386_mister_sim
-	./obj_dir/Vz386_mister_sim --trace
+trace: $(OBJ_DIR)/Vz386_mister_sim
+	./$(OBJ_DIR)/Vz386_mister_sim --trace
+
+sim85:
+	$(MAKE) OBJ_DIR=obj_dir_85 SIM_CLOCK_HZ=85000000 all
 
 clean:
-	rm -rf obj_dir obj_dir_trace
+	rm -rf $(OBJ_DIR) obj_dir_trace
 	rm -f ucode.hex waveform.fst
 
-.PHONY: all run trace clean
+.PHONY: all run trace sim85 clean
